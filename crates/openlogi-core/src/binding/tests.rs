@@ -407,6 +407,7 @@ fn persisted_action_variant_names_are_stable() {
                 .parse()
                 .unwrap_or_else(|error| panic!("valid shortcut failed: {error}")),
         ),
+        Action::Highlight(HighlightEffect::LaserDot),
     ]);
     let mut actual: Vec<String> = actions
         .into_iter()
@@ -434,6 +435,7 @@ fn persisted_action_variant_names_are_stable() {
         "Cut",
         "CycleDpiPresets",
         "Find",
+        "Highlight",
         "HorizontalScrollLeft",
         "HorizontalScrollRight",
         "HoldShortcut",
@@ -844,6 +846,73 @@ fn mouse_buttons_sort_ahead_of_every_keyboard_control() {
 }
 
 // ── Presenter highlight ───────────────────────────────────────────────────
+
+#[test]
+fn highlight_actions_are_agent_side_and_outside_the_catalog() {
+    for (effect, label) in [
+        (HighlightEffect::LaserDot, "Laser Dot"),
+        (HighlightEffect::Spotlight, "Spotlight"),
+    ] {
+        let action = Action::Highlight(effect);
+        assert_eq!(action.label(), label);
+        assert_eq!(action.category(), Category::System);
+        assert_matches!(action.effect(), Effect::AgentSide);
+        assert!(!Action::catalog().contains(&action));
+        assert_eq!(roundtrip(&action), action);
+    }
+}
+
+#[test]
+fn highlight_action_serializes_as_a_single_key_table() {
+    let value = toml::Value::try_from(Action::Highlight(HighlightEffect::Spotlight))
+        .expect("serialize action");
+    assert_eq!(
+        value,
+        toml::Value::Table(toml::map::Map::from_iter([(
+            "Highlight".to_owned(),
+            toml::Value::String("Spotlight".to_owned())
+        )]))
+    );
+}
+
+#[test]
+fn presenter_buttons_default_to_highlights_and_stay_out_of_all() {
+    assert_eq!(
+        default_binding(ButtonId::PresenterTouch),
+        Action::Highlight(HighlightEffect::LaserDot)
+    );
+    assert_eq!(
+        default_binding(ButtonId::PresenterPress),
+        Action::Highlight(HighlightEffect::Spotlight)
+    );
+    for button in ButtonId::PRESENTER {
+        assert!(button.is_presenter_button());
+        assert!(!ButtonId::ALL.contains(&button));
+        assert!(!button.is_os_hook_button());
+        assert!(!button.is_hidpp_gesture_source());
+        assert!(!button.supports_gesture_mode());
+        assert!(!button.supports_wheel_hold());
+        assert_eq!(button.config_name().parse::<ButtonId>(), Ok(button));
+        assert!(button < ButtonId::control(0x0001));
+    }
+    assert_eq!(
+        default_binding(ButtonId::PresenterClick),
+        Action::LeftClick,
+        "the short click defaults to the native left click"
+    );
+    assert_eq!(ButtonId::PresenterClick.config_name(), "PresenterClick");
+    assert!(!ButtonId::HapticPanel.is_presenter_button());
+    assert_eq!(ButtonId::PresenterTouch.config_name(), "PresenterTouch");
+    assert_eq!(ButtonId::PresenterPress.config_name(), "PresenterPress");
+    assert_eq!(
+        ButtonId::PresenterTouch.to_string(),
+        "Highlight Button (Touch)"
+    );
+    assert_eq!(
+        ButtonId::PresenterPress.to_string(),
+        "Highlight Button (Firm Press)"
+    );
+}
 
 #[test]
 fn presenter_buttons_agree_with_the_presenter_predicate() {

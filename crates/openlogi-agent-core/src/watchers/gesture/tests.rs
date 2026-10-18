@@ -1,10 +1,13 @@
 use std::time::Duration;
 
 use super::*;
-use crate::capture_plan::{PlanContext, plan_for_device};
+use crate::capture_plan::{PlanContext, plan_for_device, plan_for_device_on};
+use crate::highlight::HighlightSession;
+use crate::runtime::pointer_output::PointerOutput;
 use crate::watchers::retry::wait_for_deadline;
 use openlogi_core::binding::{Action, Binding, ButtonId, GestureDirection};
-use openlogi_core::config::{ThumbwheelSensitivity, VerticalScrollSensitivity};
+use openlogi_core::config::{Config, ThumbwheelSensitivity, VerticalScrollSensitivity};
+use openlogi_core::device::Capabilities;
 use openlogi_hid::{CaptureChannelSlot, DeviceRoute};
 
 fn route() -> DeviceRoute {
@@ -20,6 +23,11 @@ fn physical_key() -> PhysicalDeviceKey {
 
 fn session_id(epoch: u64) -> HidppSessionId {
     HidppSessionId::with_epoch("mouse-a", epoch)
+}
+
+/// A highlight session no pointer worker serves.
+fn detached_highlight() -> Arc<HighlightSession> {
+    Arc::new(HighlightSession::new(PointerOutput::detached()))
 }
 
 fn plan() -> DeviceCapturePlan {
@@ -186,7 +194,12 @@ async fn recovery_manager_waits_for_control_events_and_shutdown_between_retries(
             capture_plans,
             receiver_requests: access.subscribe_requests(),
             access: device_access,
-            outputs: GestureOutputs::new(actions.dispatcher(), scroll.input(), Arc::default()),
+            outputs: GestureOutputs::new(
+                actions.dispatcher(),
+                scroll.input(),
+                Arc::default(),
+                detached_highlight(),
+            ),
             shutdown,
         }));
 
@@ -794,8 +807,12 @@ async fn pending_restore_follows_a_disabled_devices_latest_route() {
     );
 }
 
-#[tokio::test]
-async fn a_pointer_only_plan_refresh_keeps_a_held_gesture() {
+/// The action and scroll workers a dispatcher under test submits to; the
+/// caller shuts them down.
+fn input_runtimes() -> (
+    crate::runtime::ActionRuntime,
+    crate::runtime::scroll::ScrollRuntime,
+) {
     use crate::runtime::scroll::{ScrollPreferences, ScrollRuntime};
 
     let (_signal, device_io) = openlogi_hid::device_io_channel();
@@ -807,17 +824,23 @@ async fn a_pointer_only_plan_refresh_keeps_a_held_gesture() {
         device_io,
         transport_turns: crate::hardware::TransportTurns::default(),
     };
-    let mut actions =
-        crate::runtime::ActionRuntime::new(Arc::default(), device_access, ring).unwrap();
-    let mut scroll = ScrollRuntime::spawn(Arc::new(ScrollPreferences::new(
+    let actions = crate::runtime::ActionRuntime::new(Arc::default(), device_access, ring).unwrap();
+    let scroll = ScrollRuntime::spawn(Arc::new(ScrollPreferences::new(
         false,
         VerticalScrollSensitivity::default(),
     )))
     .unwrap();
+    (actions, scroll)
+}
+
+#[tokio::test]
+async fn a_pointer_only_plan_refresh_keeps_a_held_gesture() {
+    let (mut actions, mut scroll) = input_runtimes();
     let mut dispatcher = InputDispatcher::new(GestureOutputs::new(
         actions.dispatcher(),
         scroll.input(),
         Arc::default(),
+        detached_highlight(),
     ));
 
     let mut held = plan();
@@ -863,4 +886,219 @@ async fn a_pointer_only_plan_refresh_keeps_a_held_gesture() {
 
     scroll.shutdown();
     actions.shutdown();
+}
+
+#[tokio::test]
+async fn a_plan_republish_with_other_bindings_keeps_a_held_highlight() {
+    let mut rig = PresenterRig::new();
+    let mut held = plan_with_presenter(&Config::default());
+    let mut session = live_session_from_plan(1, held.clone());
+    let id = session.id().clone();
+    rig.dispatcher.dispatch(
+        &id,
+        session.dispatch(),
+        CapturedInput::ButtonDown(ButtonId::PresenterTouch),
+    );
+    let began = rig.highlight.current().expect("touch begins a highlight");
+
+    // The overlay's position reports moved the pointer onto an app with its
+    // own bindings: the republished plan differs in more than its target.
+    held.dispatch
+        .bindings
+        .insert(ButtonId::Back, Binding::Single(Action::Copy));
+    reconcile_session(
+        &mut session,
+        Some((&held.target, &held.dispatch)),
+        &mut rig.dispatcher,
+    );
+    assert_eq!(
+        rig.highlight.current().map(|active| active.session_id),
+        Some(began.session_id),
+        "the republish must not end the held highlight"
+    );
+
+    rig.dispatcher.dispatch(
+        &id,
+        session.dispatch(),
+        CapturedInput::ButtonUp(ButtonId::PresenterTouch),
+    );
+    assert_eq!(rig.highlight.current(), None);
+    rig.shutdown();
+}
+
+/// The dispatch plan of a presenter under `config`: the device reports the
+/// highlight controls, so its highlight-bound buttons are resolved.
+fn presenter_dispatch(config: &Config) -> DispatchPlan {
+    plan_with_presenter(config).dispatch
+}
+
+/// The capture plan of a presenter under `config`.
+fn plan_with_presenter(config: &Config) -> DeviceCapturePlan {
+    let capabilities = Capabilities {
+        presenter_highlight: true,
+        ..Capabilities::default()
+    };
+    plan_for_device_on(
+        config,
+        physical_key(),
+        "mouse-a",
+        route(),
+        PlanContext {
+            os_mouse_hook_available: true,
+            capabilities: Some(&capabilities),
+            ..Default::default()
+        },
+        true,
+    )
+}
+
+struct PresenterRig {
+    dispatcher: InputDispatcher,
+    highlight: Arc<HighlightSession>,
+    actions: crate::runtime::ActionRuntime,
+    scroll: crate::runtime::scroll::ScrollRuntime,
+}
+
+impl PresenterRig {
+    fn new() -> Self {
+        let (actions, scroll) = input_runtimes();
+        let highlight = detached_highlight();
+        let outputs = GestureOutputs::new(
+            actions.dispatcher(),
+            scroll.input(),
+            Arc::default(),
+            Arc::clone(&highlight),
+        );
+        Self {
+            dispatcher: InputDispatcher::new(outputs),
+            highlight,
+            actions,
+            scroll,
+        }
+    }
+
+    fn feed(&mut self, plan: &DispatchPlan, input: CapturedInput) {
+        self.dispatcher.dispatch(&session_id(1), plan, input);
+    }
+
+    fn shutdown(mut self) {
+        self.scroll.shutdown();
+        self.actions.shutdown();
+    }
+}
+
+#[tokio::test]
+async fn presenter_holds_drive_the_highlight_session() {
+    use openlogi_core::binding::HighlightEffect;
+
+    let mut rig = PresenterRig::new();
+    let plan = presenter_dispatch(&Config::default());
+    let effect = |rig: &PresenterRig| rig.highlight.current().map(|active| active.effect);
+
+    rig.feed(&plan, CapturedInput::Motion { dx: 5, dy: 5 });
+    assert_eq!(rig.highlight.current(), None, "stray motion starts nothing");
+
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterTouch));
+    let began = rig.highlight.current().expect("touch begins a highlight");
+    assert_eq!(began.effect, HighlightEffect::LaserDot);
+
+    rig.feed(&plan, CapturedInput::Motion { dx: 3, dy: -4 });
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterPress));
+    let pressed = rig.highlight.current().expect("still active");
+    assert_eq!(pressed.effect, HighlightEffect::Spotlight);
+    assert_eq!(pressed.session_id, began.session_id);
+    assert_eq!((pressed.travel_x, pressed.travel_y), (3, -4));
+
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterPress));
+    assert_eq!(effect(&rig), Some(HighlightEffect::LaserDot));
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterTouch));
+    assert_eq!(rig.highlight.current(), None);
+
+    rig.feed(&plan, CapturedInput::Motion { dx: 9, dy: 9 });
+    assert_eq!(
+        rig.highlight.current(),
+        None,
+        "motion after release is dropped"
+    );
+    rig.shutdown();
+}
+
+#[tokio::test]
+async fn a_cancelled_session_ends_its_highlight() {
+    let mut rig = PresenterRig::new();
+    let plan = presenter_dispatch(&Config::default());
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterPress));
+    assert!(rig.highlight.current().is_some());
+    rig.dispatcher.cancel_session(&session_id(2));
+    assert!(
+        rig.highlight.current().is_some(),
+        "another session's cancellation leaves it alone"
+    );
+    rig.dispatcher.cancel_session(&session_id(1));
+    assert_eq!(rig.highlight.current(), None);
+    rig.shutdown();
+}
+
+#[tokio::test]
+async fn a_presenter_button_without_a_highlight_binding_takes_the_ordinary_path() {
+    let mut rig = PresenterRig::new();
+    let mut config = Config::default();
+    config.set_binding(
+        "mouse-a",
+        ButtonId::PresenterPress,
+        Binding::Single(Action::LeftClick),
+    );
+    let plan = presenter_dispatch(&config);
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterPress));
+    rig.feed(&plan, CapturedInput::Motion { dx: 1, dy: 1 });
+    assert_eq!(rig.highlight.current(), None);
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterPress));
+    assert_eq!(rig.highlight.current(), None);
+    rig.shutdown();
+}
+
+#[tokio::test]
+async fn a_force_swap_retargets_without_ending_the_session() {
+    use openlogi_core::binding::HighlightEffect;
+
+    let mut rig = PresenterRig::new();
+    let plan = presenter_dispatch(&Config::default());
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterTouch));
+    rig.feed(&plan, CapturedInput::Motion { dx: 2, dy: 3 });
+    let began = rig.highlight.current().expect("active");
+    // One report swapping the CID: down first, then up.
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterPress));
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterTouch));
+    let swapped = rig.highlight.current().expect("the swap keeps the session");
+    assert_eq!(swapped.effect, HighlightEffect::Spotlight);
+    assert_eq!(swapped.session_id, began.session_id);
+    assert_eq!(swapped.origin, began.origin);
+    assert_eq!((swapped.travel_x, swapped.travel_y), (2, 3));
+    // And back.
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterTouch));
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterPress));
+    let back = rig.highlight.current().expect("still active");
+    assert_eq!(back.effect, HighlightEffect::LaserDot);
+    assert_eq!(back.session_id, began.session_id);
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterTouch));
+    assert_eq!(rig.highlight.current(), None);
+    rig.shutdown();
+}
+
+/// The accumulator delivers a force swap as Down then Up; an Up first would
+/// leave no hold, so the dispatcher ends the highlight and the Down starts a
+/// new one rather than guessing at a report boundary it cannot see.
+#[tokio::test]
+async fn a_swap_delivered_up_first_restarts_the_highlight() {
+    let mut rig = PresenterRig::new();
+    let plan = presenter_dispatch(&Config::default());
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterTouch));
+    let began = rig.highlight.current().expect("active");
+    rig.feed(&plan, CapturedInput::ButtonUp(ButtonId::PresenterTouch));
+    assert_eq!(rig.highlight.current(), None);
+    rig.feed(&plan, CapturedInput::ButtonDown(ButtonId::PresenterPress));
+    let restarted = rig.highlight.current().expect("a new highlight");
+    assert_ne!(restarted.session_id, began.session_id);
+    assert_eq!((restarted.travel_x, restarted.travel_y), (0, 0));
+    rig.shutdown();
 }

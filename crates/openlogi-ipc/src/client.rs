@@ -33,8 +33,8 @@ use tarpc::client::{self, RpcError};
 use tarpc::context::{self, Context};
 
 use crate::{
-    AgentClient, BacklightObservation, ClientKind, Generation, OBSERVE_HOLD, Observation,
-    PROTOCOL_VERSION, RingObservation, transport,
+    AgentClient, BacklightObservation, ClientKind, Generation, HighlightObservation, OBSERVE_HOLD,
+    Observation, PROTOCOL_VERSION, RingObservation, transport,
 };
 
 /// Why a client could not be established.
@@ -221,6 +221,12 @@ impl Stamped for BacklightObservation {
     }
 }
 
+impl Stamped for HighlightObservation {
+    fn generation(&self) -> Generation {
+        self.generation
+    }
+}
+
 /// One connection's view of the agent's generation counter.
 ///
 /// Starts at 0 — "I have seen nothing" — so the first answer is the agent's
@@ -327,6 +333,18 @@ impl Observer<BacklightObservation> {
     }
 }
 
+impl Observer<HighlightObservation> {
+    /// Observe the presenter highlight the overlay should be drawing over
+    /// `client`.
+    #[must_use]
+    pub fn highlight(client: AgentClient) -> Self {
+        Self::new(client, |client, since| {
+            let client = client.clone();
+            Box::pin(async move { client.observe_highlight(observe_context(), since).await })
+        })
+    }
+}
+
 impl<T: Stamped> Observer<T> {
     fn new(client: AgentClient, arm: fn(&AgentClient, Generation) -> InFlight<T>) -> Self {
         let ledger = Ledger::new();
@@ -376,7 +394,7 @@ mod tests {
 
     use super::*;
     use crate::testing::in_memory_agent;
-    use crate::{AgentRequest, AgentResponse};
+    use crate::{ActiveHighlight, AgentRequest, AgentResponse};
 
     /// An agent that answers the handshake with `version` and records who
     /// declares themselves to it.
@@ -573,7 +591,7 @@ mod tests {
     }
 
     /// Poll `observer` until the agent has heard from it and gone quiet.
-    async fn until_held(observer: &mut Observer<RingObservation>) {
+    async fn until_held<T: Stamped>(observer: &mut Observer<T>) {
         let held = tokio::time::timeout(Duration::from_secs(1), observer.next()).await;
         assert!(held.is_err(), "a quiet agent holds the request open");
     }
@@ -642,6 +660,57 @@ mod tests {
             [0],
             "the answer came from the call the dropped future had started"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_highlight_observer_asks_for_the_highlight_channel() {
+        use openlogi_core::binding::HighlightEffect;
+        use openlogi_core::config::{HighlightAppearance, HighlightMotion, HighlightPointer};
+
+        let active = ActiveHighlight {
+            session_id: 4,
+            effect: HighlightEffect::Spotlight,
+            origin: Some((1.0, 2.0)),
+            travel_x: 3,
+            travel_y: -4,
+            pointer: HighlightPointer::Follow,
+            appearance: HighlightAppearance::default(),
+            motion: HighlightMotion::default(),
+        };
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let recorded = asked.clone();
+        let client = in_memory_agent(
+            move |request| {
+                let recorded = recorded.clone();
+                Box::pin(async move {
+                    let AgentRequest::ObserveHighlight { since } = request else {
+                        panic!("an observer sent an unexpected request: {request:?}");
+                    };
+                    recorded.lock().unwrap().push(since);
+                    if since == 0 {
+                        Ok(AgentResponse::ObserveHighlight(HighlightObservation {
+                            generation: 2,
+                            active: Some(active),
+                        }))
+                    } else {
+                        std::future::pending().await
+                    }
+                })
+            },
+            std::future::pending(),
+        );
+        let mut observer = Observer::highlight(client);
+
+        let fresh = observer.next().await.expect("the agent is up");
+        assert_eq!(
+            fresh,
+            Some(HighlightObservation {
+                generation: 2,
+                active: Some(active),
+            })
+        );
+        until_held(&mut observer).await;
+        assert_eq!(*asked.lock().unwrap(), [0, 2]);
     }
 
     #[tokio::test]

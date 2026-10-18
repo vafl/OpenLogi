@@ -34,6 +34,11 @@
 //!   toggles behave like a live device.
 //! - `start_pairing` runs a scripted Bolt flow: discovery → passkey → paired,
 //!   and the paired keyboard joins the inventory.
+//! - With `OPENLOGI_MOCK_HIGHLIGHT=1`, a Spotlight 2-like presenter joins the
+//!   receiver and a presenter highlight is scripted on a loop, so the Presenter
+//!   panel and the overlay's highlight can be developed without hardware. The
+//!   scripted session has no pointer worker: it never moves or hides the
+//!   developer's real pointer.
 
 use std::ffi::OsString;
 use std::fs;
@@ -44,9 +49,12 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
 use interprocess::local_socket::traits::tokio::Listener as _;
+use openlogi_agent_core::highlight::{HighlightLook, HighlightSession};
+use openlogi_agent_core::runtime::pointer_output::PointerOutput;
 use openlogi_core::app::ForegroundApp;
-use openlogi_core::binding::ActionRingSlot;
-use openlogi_core::config::{Config, Lighting};
+use openlogi_core::binding::{ActionRingSlot, HighlightEffect};
+use openlogi_core::color::Rgb;
+use openlogi_core::config::{Config, HighlightAppearance, HighlightPointer, Lighting};
 use openlogi_core::device::{
     BatteryInfo, BatteryLevel, BatteryStatus, Capabilities, DeviceInventory, DeviceKind,
     PairedDevice, StandaloneDevice,
@@ -62,15 +70,16 @@ use openlogi_ipc::transport;
 use openlogi_ipc::{
     ActionRingCommandError, ActionRingInvocation, Agent, AgentSnapshot, AgentStatus,
     BacklightObservation, ClientKind, ConfigReloadError, ForegroundApps, FoundDevice, Generation,
-    Identity, InventoryHealth, MonitorEvent, OBSERVE_HOLD, Observation, PROTOCOL_VERSION,
-    PairingCommandError, PairingFailure, PairingPhase, PairingUpdate, RingObservation, SavedConfig,
+    HighlightObservation, Identity, InventoryHealth, MonitorEvent, OBSERVE_HOLD, Observation,
+    PROTOCOL_VERSION, PairingCommandError, PairingFailure, PairingPhase, PairingUpdate,
+    RingObservation, SavedConfig,
 };
 use succession::Compat;
 use tarpc::context::Context;
 use tarpc::server::{BaseChannel, Channel as _};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 
 #[path = "mock_agent/profile.rs"]
 mod profile;
@@ -124,7 +133,7 @@ fn main() -> ExitCode {
     default_to_dev_profile();
     openlogi_core::logging::init_stderr();
 
-    let state = match state_from_args(std::env::args_os().skip(1)) {
+    let mut state = match state_from_args(std::env::args_os().skip(1)) {
         Ok(state) => state,
         Err(error) => {
             warn!(%error, "could not build the mock profile");
@@ -161,7 +170,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(serve(MockAgent::new(state))) {
+    // Fixture mode serves its profile verbatim, so the demo is demo-time only.
+    let highlight_demo =
+        state.clock.is_demo() && std::env::var(MOCK_HIGHLIGHT_ENV).is_ok_and(|value| value == "1");
+    if highlight_demo {
+        state.script_presenter();
+    }
+    let mut agent = MockAgent::new(state);
+    agent.highlight =
+        highlight_demo.then(|| Arc::new(HighlightSession::new(PointerOutput::detached())));
+    match runtime.block_on(serve(agent)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             warn!(error = %e, "could not bind the IPC socket");
@@ -231,9 +249,87 @@ fn default_to_dev_profile() {
     }
 }
 
+/// Set to `1` to have the mock script a presenter and its highlight (demo
+/// mode only). Read once at startup. Only the mock reads it, so it is not in
+/// `openlogi_core::env`, which names the knobs more than one process shares.
+const MOCK_HIGHLIGHT_ENV: &str = "OPENLOGI_MOCK_HIGHLIGHT";
+
+/// A deliberately non-default appearance, so the demo shows the appearance
+/// settings reaching the overlay: a 20 pt green laser dot, a 250 pt spotlight
+/// dimming 80 %. Motion stays at its default, so the demo exercises the
+/// precision damping and the steady release the way an unconfigured device
+/// does.
+const DEMO_APPEARANCE: HighlightAppearance = HighlightAppearance {
+    laser_size: 20,
+    laser_color: Rgb::new(0x00, 0xff, 0x40),
+    spotlight_size: 250,
+    spotlight_dim: 80,
+};
+
+fn demo_look(pointer: HighlightPointer) -> HighlightLook {
+    HighlightLook {
+        pointer,
+        appearance: DEMO_APPEARANCE,
+        ..HighlightLook::default()
+    }
+}
+
+/// Every cycle: an 8 s pause, a laser dot circling its press point for 3 s
+/// that rests 300 ms and then flicks for 60 ms (the hand jiggling on release,
+/// which the steady release must not report), then a 2 s spotlight drifting
+/// slowly: the overlay highlight path without a presenter.
+async fn script_highlight(session: Arc<HighlightSession>) {
+    const FRAME_MS: u32 = 16;
+    const FRAME: Duration = Duration::from_millis(FRAME_MS as u64);
+    // Raw device units; the overlay applies its own gain.
+    const CIRCLE_RADIUS: f64 = 150.0;
+    loop {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        session.begin(
+            HighlightEffect::LaserDot,
+            Some((700.0, 400.0)),
+            demo_look(HighlightPointer::Hide),
+        );
+        let frames = 3000 / FRAME_MS;
+        let (mut last_x, mut last_y) = (CIRCLE_RADIUS, 0.0_f64);
+        for frame in 1..=frames {
+            tokio::time::sleep(FRAME).await;
+            let angle = f64::from(frame) / f64::from(frames) * std::f64::consts::TAU;
+            let (x, y) = (CIRCLE_RADIUS * angle.cos(), CIRCLE_RADIUS * angle.sin());
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "per-frame step is a few units"
+            )]
+            session.travel((x - last_x).round() as i32, (y - last_y).round() as i32);
+            // Track what was actually sent so rounding does not accumulate.
+            last_x += (x - last_x).round();
+            last_y += (y - last_y).round();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for _ in 0..4 {
+            tokio::time::sleep(FRAME).await;
+            session.travel(10, 0);
+        }
+        session.end();
+        session.begin(
+            HighlightEffect::Spotlight,
+            Some((900.0, 500.0)),
+            demo_look(HighlightPointer::Follow),
+        );
+        for _ in 0..(2000 / FRAME_MS) {
+            tokio::time::sleep(FRAME).await;
+            session.travel(2, 1);
+        }
+        session.end();
+    }
+}
+
 /// Accept loop — the mock's copy of `server::run` (kept verbatim rather than
 /// making the production loop generic over its service impl for a dev tool).
 async fn serve(server: MockAgent) -> std::io::Result<()> {
+    if let Some(session) = &server.highlight {
+        tokio::spawn(script_highlight(Arc::clone(session)));
+    }
     serve_on(transport::bind()?, server).await
 }
 
@@ -351,6 +447,34 @@ impl State {
             next_pairing_id: 0,
             clock,
         })
+    }
+
+    /// Add a Spotlight 2-like presenter to the Bolt receiver so the Presenter
+    /// panel can be developed without hardware. Demo mode only: fixture mode
+    /// serves its profile verbatim.
+    fn script_presenter(&mut self) {
+        let slot = self.next_slot;
+        self.next_slot = slot.saturating_add(1);
+        self.paired_extra.push(PairedDevice {
+            slot,
+            codename: Some("Spotlight 2".to_string()),
+            wpid: Some(0xb506),
+            kind: DeviceKind::Presenter,
+            online: true,
+            battery: Some(BatteryInfo {
+                percentage: Some(72),
+                level: BatteryLevel::Good,
+                status: BatteryStatus::Discharging,
+            }),
+            model_info: None,
+            capabilities: Some(Capabilities {
+                buttons: true,
+                haptic_feedback: true,
+                presenter_highlight: true,
+                ..Capabilities::default()
+            }),
+            settings_revision: 0,
+        });
     }
 
     /// Publish where pairing stands. Separate from [`Self::pairing`] because a
@@ -677,6 +801,10 @@ struct MockAgent {
     /// The last [`Observation`] handed out, so `observe` can stamp a new
     /// generation when the rendered state differs from it.
     served: Arc<Mutex<Observation>>,
+    /// The scripted presenter highlight `observe_highlight` serves; `None`
+    /// unless [`MOCK_HIGHLIGHT_ENV`] switched the demo on. The session has no
+    /// pointer worker, so it never touches the real pointer.
+    highlight: Option<Arc<HighlightSession>>,
 }
 
 impl MockAgent {
@@ -688,6 +816,7 @@ impl MockAgent {
         Self {
             state: Arc::new(Mutex::new(state)),
             served: Arc::new(Mutex::new(served)),
+            highlight: None,
         }
     }
 
@@ -776,6 +905,27 @@ impl Agent for MockAgent {
             current_level: 0,
             levels: 0,
             visible: false,
+        }
+    }
+
+    async fn highlight_released(self, _: Context, session_id: u64, x: f64, y: f64) {
+        debug!(session_id, x, y, "mock: highlight released");
+    }
+
+    async fn highlight_moved(self, _: Context, session_id: u64, x: f64, y: f64) {
+        trace!(session_id, x, y, "mock: highlight moved");
+    }
+
+    async fn observe_highlight(self, _: Context, since: Generation) -> HighlightObservation {
+        if let Some(highlight) = &self.highlight {
+            return highlight.observe(since).await;
+        }
+        // Unscripted, the mock only ever has "hidden" to report — held for
+        // the window so an overlay polling it doesn't spin.
+        tokio::time::sleep(OBSERVE_HOLD).await;
+        HighlightObservation {
+            generation: 1,
+            active: None,
         }
     }
 

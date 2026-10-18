@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::button_map::{deserialize_button_map, deserialize_button_maps_by_app};
+use super::presenter::{PresenterSettings, deserialize_presenter};
 use super::settings::{
     CameraControls, GestureOwner, LightSettings, Lighting, ScrollResolution, SmartShift,
     ThumbwheelSensitivity, deserialize_gesture_owner,
@@ -305,6 +306,13 @@ pub struct DeviceConfig {
     /// leave the device's rate alone".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_rate: Option<ReportRate>,
+    /// Force-sensing button settings of a presenter (`[devices.<key>.presenter]`).
+    /// The agent writes them, and switches the button into both-levels
+    /// reporting, whenever the presenter comes online. `None` — the default —
+    /// applies [`PresenterSettings::default`]: both-levels reporting, the
+    /// OpenLogi default thresholds and enabled haptics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presenter: Option<PresenterSettings>,
 }
 
 impl DeviceConfig {
@@ -408,6 +416,7 @@ impl Default for DeviceConfig {
             fn_lock: None,
             keep_os_layout: None,
             report_rate: None,
+            presenter: None,
         }
     }
 }
@@ -534,6 +543,8 @@ struct RawDeviceConfig {
     keep_os_layout: Option<bool>,
     #[serde(default)]
     report_rate: Option<ReportRate>,
+    #[serde(default, deserialize_with = "deserialize_presenter")]
+    presenter: Option<PresenterSettings>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
@@ -597,6 +608,7 @@ impl From<RawDeviceConfig> for DeviceConfig {
             fn_lock: raw.fn_lock,
             keep_os_layout: raw.keep_os_layout,
             report_rate: raw.report_rate,
+            presenter: raw.presenter,
         }
     }
 }

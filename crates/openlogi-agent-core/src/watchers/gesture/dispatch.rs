@@ -1,21 +1,23 @@
 //! Resolve captured HID++ inputs against the active per-device plan.
 
+mod presenter;
 mod wheel;
 
 use std::collections::HashMap;
 use std::num::NonZeroU8;
 use std::time::Instant;
 
-use openlogi_core::binding::{Action, Binding, ButtonId, HeldWheel, default_binding};
+use openlogi_core::binding::{Action, Binding, ButtonId, HeldWheel};
 use openlogi_core::config::ThumbwheelSensitivity;
 use openlogi_core::scroll::ScrollDelta;
 use openlogi_hid::CapturedInput;
 use openlogi_hid::thumbwheel::WheelResolution;
 use tracing::debug;
 
+use self::presenter::{HighlightStep, PresenterHolds};
 use self::wheel::{ScrollScale, WheelAccumulators, WheelOutput, WheelRotation};
 use super::GestureOutputs;
-use crate::capture_plan::DispatchPlan;
+use crate::capture_plan::{DispatchPlan, effective_click_action};
 use crate::runtime::hook::SharedHookMaps;
 use crate::runtime::{HidppSessionId, PressToken};
 
@@ -32,11 +34,7 @@ pub(super) struct WheelConfiguration {
 impl WheelConfiguration {
     /// Resolve both directional bindings and their shared sensitivity.
     pub(super) fn for_plan(plan: &DispatchPlan) -> Self {
-        let action = |button| {
-            plan.bindings
-                .get(&button)
-                .map_or_else(|| default_binding(button), Binding::click_action)
-        };
+        let action = |button| effective_click_action(&plan.bindings, button);
         Self {
             up: action(ButtonId::ThumbwheelScrollUp),
             down: action(ButtonId::ThumbwheelScrollDown),
@@ -103,6 +101,7 @@ pub(super) struct InputDispatcher {
     outputs: GestureOutputs,
     wheels: SessionWheels,
     held_presses: HeldPresses,
+    presenter: PresenterHolds,
 }
 
 impl InputDispatcher {
@@ -113,6 +112,7 @@ impl InputDispatcher {
             outputs,
             wheels: SessionWheels::default(),
             held_presses: HeldPresses::default(),
+            presenter: PresenterHolds::default(),
         }
     }
 
@@ -137,11 +137,76 @@ impl InputDispatcher {
         self.held_presses.get(session, button).is_some()
     }
 
-    /// Cancel every input lifecycle retained for one capture session.
-    pub(super) fn cancel_session(&mut self, session: &HidppSessionId) {
+    /// Cancel what a republished dispatch plan with other bindings invalidates:
+    /// admitted presses, wheel progress and output tokens. A presenter hold
+    /// survives: the highlight does not depend on the bindings, its release
+    /// is tracked by the hold itself, and ending it mid-press would kill the
+    /// highlight the pointer move it caused just republished the plan for.
+    pub(super) fn cancel_bindings(&mut self, session: &HidppSessionId) {
         self.outputs.cancel_session(session);
         self.wheels.cancel_session(session);
         self.held_presses.cancel_session(session);
+    }
+
+    /// Cancel every input lifecycle retained for one capture session.
+    ///
+    /// The highlight is one shared session, so this assumes a single presenter
+    /// at a time: cancelling a session that held a highlight ends it, even if
+    /// a second presenter's session held its own.
+    pub(super) fn cancel_session(&mut self, session: &HidppSessionId) {
+        self.cancel_bindings(session);
+        if self.presenter.cancel_session(session) {
+            self.outputs.highlight.end();
+        }
+    }
+
+    /// A highlight is agent-side state, not an action to inject, so a
+    /// highlight-bound presenter press never enters the shared button
+    /// runtime. Returns whether `button` was such a press.
+    fn highlight_down(
+        &mut self,
+        session: &HidppSessionId,
+        plan: &DispatchPlan,
+        button: ButtonId,
+    ) -> bool {
+        let Some(&effect) = plan.highlight_buttons.get(&button) else {
+            return false;
+        };
+        debug!(
+            key = session.device_key(),
+            ?button,
+            ?effect,
+            "presenter button → highlight"
+        );
+        let step = self.presenter.down(session, button, effect);
+        self.apply_highlight_step(step, plan);
+        true
+    }
+
+    /// Raw pointer motion travels the highlight only while this session
+    /// holds one; a stray report after the release is dropped.
+    fn highlight_motion(&self, session: &HidppSessionId, dx: i16, dy: i16) {
+        if self.presenter.is_holding(session) {
+            self.outputs.highlight.travel(i32::from(dx), i32::from(dy));
+        }
+    }
+
+    /// Apply one highlight transition. No software haptic is played: the pad
+    /// clicks by itself when the force crosses a level, and a second pulse
+    /// from the agent would arrive late as a double click.
+    fn apply_highlight_step(&self, step: HighlightStep, plan: &DispatchPlan) {
+        let highlight = &self.outputs.highlight;
+        match step {
+            HighlightStep::Begin(effect) => {
+                highlight.begin(
+                    effect,
+                    openlogi_hook::cursor_position().map(|cursor| (cursor.x, cursor.y)),
+                    plan.highlight,
+                );
+            }
+            HighlightStep::SetEffect(effect) => highlight.set_effect(effect),
+            HighlightStep::End => highlight.end(),
+        }
     }
 
     /// Route one captured input from `session` to its bound action or
@@ -181,6 +246,9 @@ impl InputDispatcher {
                 }
             }
             CapturedInput::ButtonDown(button) => {
+                if self.highlight_down(session, plan, button) {
+                    return;
+                }
                 // A raw-XY gesture source owns its click/swipe map; its physical
                 // lifecycle is still tracked, but it must not also fire the
                 // single-action projection on down.
@@ -208,6 +276,10 @@ impl InputDispatcher {
                 }
             }
             CapturedInput::ButtonUp(button) => {
+                if let Some(step) = self.presenter.up(session, button) {
+                    self.apply_highlight_step(step, plan);
+                    return;
+                }
                 self.outputs.actions.try_hidpp_button_up(session, button);
                 self.held_presses.end(session, button);
             }
@@ -243,9 +315,7 @@ impl InputDispatcher {
                     openlogi_inject::natural_scrolling(),
                 ),
             ),
-            // Only a diverted presenter source reports motion, and no plan
-            // diverts one yet.
-            CapturedInput::Motion { .. } => {}
+            CapturedInput::Motion { dx, dy } => self.highlight_motion(session, dx, dy),
             CapturedInput::ThumbwheelDirection { .. } => {
                 unreachable!("thumb-wheel direction reports return before dispatch")
             }

@@ -11,16 +11,22 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use openlogi_core::binding::{Action, Binding, ButtonId, GestureDirection, default_binding};
+use openlogi_core::binding::{
+    Action, Binding, ButtonId, GestureDirection, HighlightEffect, default_binding,
+};
 use openlogi_core::bindings::{button_bindings_for, hidpp_gesture_maps_for, oshook_gestures_for};
 use openlogi_core::config::{Config, ThumbwheelSensitivity};
+use openlogi_core::device::{Capabilities, HIGHLIGHT_OVERLAY_SUPPORTED};
 use openlogi_core::device_order::PhysicalDeviceKey;
 use openlogi_hid::DeviceRoute;
 use openlogi_hid::reprog_controls::DPI_MODE_SHIFT_CIDS;
 use openlogi_hid::session::gesture::{
-    CaptureSpec, DIVERTABLE_STANDARD_BUTTONS, GESTURE_SOURCE_BUTTONS,
+    CaptureSpec, DIVERTABLE_STANDARD_BUTTONS, GESTURE_SOURCE_BUTTONS, PRESENTER_CLICK_SOURCE,
+    PRESENTER_SOURCE_BUTTONS,
 };
 use tokio::sync::watch;
+
+use crate::highlight::HighlightLook;
 
 /// Hardware identity of one HID++ capture session.
 ///
@@ -73,6 +79,13 @@ pub struct DispatchPlan {
     /// which [`plan_for_device`] cannot see: the orchestrator fills it in,
     /// as it does [`Self::pointer_target`].
     pub invert_wheel: bool,
+    /// What the visible pointer does during this device's presenter
+    /// highlight, and how it is drawn and moves (`[devices.<key>.presenter]`).
+    pub highlight: HighlightLook,
+    /// The presenter buttons whose effective click action is a highlight,
+    /// with the effect each starts; empty for a device without presenter
+    /// controls.
+    pub highlight_buttons: BTreeMap<ButtonId, HighlightEffect>,
     /// Pointer identity used to select these mouse bindings; absent for the
     /// explicitly focused policy and keyboard input.
     pub pointer_target: Option<openlogi_hook::PointerTarget>,
@@ -97,7 +110,8 @@ impl DeviceCapturePlan {
         let before = spec.divert_buttons.len()
             + spec.divert_gesture_buttons.len()
             + spec.divert_gesture_sources.len()
-            + spec.divert_wheel_buttons.len();
+            + spec.divert_wheel_buttons.len()
+            + spec.divert_presenter_sources.len();
         spec.divert_buttons
             .retain(|(cid, _)| !owned.contains_key(cid));
         spec.divert_gesture_buttons
@@ -106,11 +120,14 @@ impl DeviceCapturePlan {
             .retain(|cid| !owned.contains_key(cid));
         spec.divert_wheel_buttons
             .retain(|(cid, _)| !owned.contains_key(cid));
+        spec.divert_presenter_sources
+            .retain(|(cid, _)| !owned.contains_key(cid));
         let released = before
             - spec.divert_buttons.len()
             - spec.divert_gesture_buttons.len()
             - spec.divert_gesture_sources.len()
-            - spec.divert_wheel_buttons.len();
+            - spec.divert_wheel_buttons.len()
+            - spec.divert_presenter_sources.len();
         if released > 0 {
             tracing::debug!(
                 released,
@@ -206,9 +223,84 @@ pub(crate) fn hidpp_side_gesture_maps_for(
         .collect()
 }
 
+/// The action `button` runs on a plain click under `bindings`: its binding's
+/// click action, or the button's default when none is bound.
+pub(crate) fn effective_click_action(
+    bindings: &BTreeMap<ButtonId, Binding>,
+    button: ButtonId,
+) -> Action {
+    bindings
+        .get(&button)
+        .map_or_else(|| default_binding(button), Binding::click_action)
+}
+
+/// Presenter controls split by how their binding is delivered. The default is
+/// a device without presenter controls: nothing diverted, nothing to repair.
+#[derive(Default)]
+struct PresenterSources {
+    /// Highlight-bound controls, diverted with raw-XY.
+    highlights: Vec<(u16, ButtonId)>,
+    /// Controls bound to an ordinary action, diverted as plain presses.
+    plain: Vec<(u16, ButtonId)>,
+    /// The short click keeps its firmware function (a mouse left click).
+    click_native: bool,
+    /// Every presenter button bound to a highlight, with its effect.
+    effects: BTreeMap<ButtonId, HighlightEffect>,
+}
+
+/// Split the presenter controls by their effective binding: a highlight is
+/// forwarded live (raw-XY) and any other action is an ordinary remap that is
+/// plain-diverted; `None` leaves the control native. Presenter controls never
+/// reach the OS hook.
+///
+/// The short click ([`PRESENTER_CLICK_SOURCE`]) reads differently, because its
+/// native function is itself a click: `LeftClick` (the default) leaves it
+/// native, `None` plain-diverts it so the click is swallowed ("do nothing" —
+/// unlike a gesture source, where `None` means native), and any other action
+/// is plain-diverted and dispatched like an ordinary remap.
+fn presenter_sources(bindings: &BTreeMap<ButtonId, Binding>) -> PresenterSources {
+    let mut sources = PresenterSources::default();
+    for (cid, button) in PRESENTER_SOURCE_BUTTONS {
+        match effective_click_action(bindings, button) {
+            Action::Highlight(effect) => {
+                sources.highlights.push((cid, button));
+                sources.effects.insert(button, effect);
+            }
+            Action::None => {}
+            _ => sources.plain.push((cid, button)),
+        }
+    }
+    let (click_cid, click_button) = PRESENTER_CLICK_SOURCE;
+    let click = effective_click_action(bindings, click_button);
+    sources.click_native = click == Action::LeftClick;
+    if !sources.click_native {
+        sources.plain.push((click_cid, click_button));
+    }
+    if let Action::Highlight(effect) = click {
+        sources.effects.insert(click_button, effect);
+    }
+    sources
+}
+
+/// Whether the thumb-wheel rotation or tap bindings leave their defaults, so
+/// the wheel must be captured.
+fn thumbwheel_bindings_nondefault(bindings: &BTreeMap<ButtonId, Binding>) -> bool {
+    [
+        ButtonId::Thumbwheel,
+        ButtonId::ThumbwheelScrollUp,
+        ButtonId::ThumbwheelScrollDown,
+    ]
+    .iter()
+    .any(|button| {
+        bindings
+            .get(button)
+            .is_some_and(|binding| binding.click_action() != default_binding(*button))
+    })
+}
+
 /// What one device's plan is resolved against beyond its config and identity.
 /// The default is the plain case: no foreground app, generation 0, no OS mouse
-/// hook.
+/// hook, capabilities not yet probed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlanContext<'a> {
     /// Foreground app whose per-app bindings apply.
@@ -217,10 +309,17 @@ pub struct PlanContext<'a> {
     pub rearm_generation: u64,
     /// Whether the OS mouse hook can deliver the pointer controls it owns.
     pub os_mouse_hook_available: bool,
+    /// The device's probed capabilities, `None` before the probe: the
+    /// presenter controls are planned only for a device that reports
+    /// [`Capabilities::presenter_highlight`], so no other device has its
+    /// `0x00d8` / `0x01a8` / `0x0050` controls touched.
+    pub capabilities: Option<&'a Capabilities>,
 }
 
 /// Build one device's plan from the config (per-app effective for
-/// `context.app`).
+/// `context.app`). The presenter controls are planned only on a host that can
+/// show the highlight ([`HIGHLIGHT_OVERLAY_SUPPORTED`]); elsewhere they stay
+/// native.
 #[must_use]
 pub fn plan_for_device(
     config: &Config,
@@ -228,6 +327,27 @@ pub fn plan_for_device(
     config_key: &str,
     route: DeviceRoute,
     context: PlanContext<'_>,
+) -> DeviceCapturePlan {
+    plan_for_device_on(
+        config,
+        physical_key,
+        config_key,
+        route,
+        context,
+        HIGHLIGHT_OVERLAY_SUPPORTED,
+    )
+}
+
+/// [`plan_for_device`] for a host that can show the highlight or not, so the
+/// tests exercise both whatever the build target is.
+#[must_use]
+pub(crate) fn plan_for_device_on(
+    config: &Config,
+    physical_key: PhysicalDeviceKey,
+    config_key: &str,
+    route: DeviceRoute,
+    context: PlanContext<'_>,
+    highlight_supported: bool,
 ) -> DeviceCapturePlan {
     let app = context.app;
     let bindings = button_bindings_for(config, Some(config_key), app);
@@ -277,7 +397,7 @@ pub fn plan_for_device(
     let plain_sources = GESTURE_SOURCE_BUTTONS
         .into_iter()
         .filter(|(_, button)| !gesture_bindings.contains_key(button));
-    let divert_buttons: Vec<(u16, ButtonId)> = DIVERTABLE_STANDARD_BUTTONS
+    let mut divert_buttons: Vec<(u16, ButtonId)> = DIVERTABLE_STANDARD_BUTTONS
         .into_iter()
         .chain(plain_sources)
         // These controls are owned by the OS-hook path. The capture opt-out
@@ -306,17 +426,13 @@ pub fn plan_for_device(
             })
         })
         .collect();
-    let thumbwheel_bindings_nondefault = [
-        ButtonId::Thumbwheel,
-        ButtonId::ThumbwheelScrollUp,
-        ButtonId::ThumbwheelScrollDown,
-    ]
-    .iter()
-    .any(|button| {
-        bindings
-            .get(button)
-            .is_some_and(|binding| binding.click_action() != default_binding(*button))
-    });
+    let presenters = context
+        .capabilities
+        .filter(|caps| highlight_supported && caps.presenter_highlight)
+        .map_or_else(PresenterSources::default, |_| presenter_sources(&bindings));
+    divert_buttons.extend(presenters.plain);
+    let highlight_buttons = presenters.effects;
+    let thumbwheel_bindings_nondefault = thumbwheel_bindings_nondefault(&bindings);
     let thumbwheel_sensitivity = config.thumbwheel_sensitivity(config_key);
     DeviceCapturePlan {
         target: CaptureTarget {
@@ -332,10 +448,8 @@ pub fn plan_for_device(
                     .collect(),
                 divert_gesture_buttons,
                 divert_buttons,
-                // The presenter controls stay native: no binding reaches them
-                // yet.
-                divert_presenter_sources: Vec::new(),
-                presenter_click_native: false,
+                divert_presenter_sources: presenters.highlights,
+                presenter_click_native: presenters.click_native,
                 divert_wheel_buttons,
                 // Needs the device's wheel capabilities and the settings of
                 // its current link, so the orchestrator fills it in.
@@ -350,6 +464,8 @@ pub fn plan_for_device(
             side_gesture_bindings,
             thumbwheel_sensitivity,
             invert_wheel: false,
+            highlight: HighlightLook::for_device(config, config_key),
+            highlight_buttons,
             pointer_target: None,
         },
     }
@@ -358,6 +474,10 @@ pub fn plan_for_device(
 #[cfg(test)]
 mod tests {
     use openlogi_core::binding::{Binding, LongPressBinding, WheelHoldBinding};
+    use openlogi_core::config::{
+        HighlightAppearance, HighlightMotion, HighlightPointer, HighlightSensitivity, LaserSize,
+        PresenterSettings, SpotlightDim, SpotlightSize,
+    };
     use openlogi_hid::reprog_controls::{
         GESTURE_BUTTON_CID, HAPTIC_PANEL_CID, MULTIPLATFORM_GESTURE_BUTTON_CID,
     };
@@ -401,17 +521,61 @@ mod tests {
         rearm_generation: u64,
         os_mouse_hook_available: bool,
     ) -> DeviceCapturePlan {
-        super::plan_for_device(
+        plan_with(
             config,
-            PhysicalDeviceKey::parse("receiver:cafe:slot:2")
-                .expect("fixture should be a physical key"),
             config_key,
             route,
             PlanContext {
                 app,
                 rearm_generation,
                 os_mouse_hook_available,
+                capabilities: None,
             },
+        )
+    }
+
+    /// The plan of a device that reports the presenter highlight controls.
+    fn presenter_plan(config: &Config, config_key: &str) -> DeviceCapturePlan {
+        let capabilities = Capabilities {
+            presenter_highlight: true,
+            ..Capabilities::default()
+        };
+        plan_with(
+            config,
+            config_key,
+            route(),
+            PlanContext {
+                os_mouse_hook_available: true,
+                capabilities: Some(&capabilities),
+                ..PlanContext::default()
+            },
+        )
+    }
+
+    fn plan_with(
+        config: &Config,
+        config_key: &str,
+        route: DeviceRoute,
+        context: PlanContext<'_>,
+    ) -> DeviceCapturePlan {
+        plan_with_host(config, config_key, route, context, true)
+    }
+
+    fn plan_with_host(
+        config: &Config,
+        config_key: &str,
+        route: DeviceRoute,
+        context: PlanContext<'_>,
+        highlight_supported: bool,
+    ) -> DeviceCapturePlan {
+        super::plan_for_device_on(
+            config,
+            PhysicalDeviceKey::parse("receiver:cafe:slot:2")
+                .expect("fixture should be a physical key"),
+            config_key,
+            route,
+            context,
+            highlight_supported,
         )
     }
 
@@ -743,6 +907,253 @@ mod tests {
                 .divert_buttons
                 .contains(&(HAPTIC_PANEL_CID, ButtonId::HapticPanel)),
             "a single-bound panel must be plain-diverted, or the binding can never fire"
+        );
+    }
+
+    #[test]
+    fn presenter_defaults_are_diverted_with_raw_xy_for_highlights() {
+        let plan = presenter_plan(&Config::default(), "spotlight");
+        let spec = &plan.target.spec;
+        assert_eq!(spec.divert_presenter_sources, PRESENTER_SOURCE_BUTTONS);
+        assert!(
+            !diverts(&plan, ButtonId::PresenterTouch) && !diverts(&plan, ButtonId::PresenterPress),
+            "highlight sources are not plain-diverted"
+        );
+    }
+
+    /// Only a device that reports `presenter_highlight` has its presenter
+    /// controls planned: `0x0050` is an ordinary mouse button anywhere else,
+    /// and an unprobed device is left native until its capabilities are known.
+    #[test]
+    fn presenter_controls_are_planned_only_for_a_presenter() {
+        let mut cfg = Config::default();
+        cfg.set_binding(
+            "mouse",
+            ButtonId::PresenterClick,
+            Binding::Single(Action::PlayPause),
+        );
+        cfg.set_binding(
+            "mouse",
+            ButtonId::PresenterPress,
+            Binding::Single(Action::LeftClick),
+        );
+        let without = Capabilities::default();
+        for capabilities in [None, Some(&without)] {
+            let plan = plan_with(
+                &cfg,
+                "mouse",
+                route(),
+                PlanContext {
+                    os_mouse_hook_available: true,
+                    capabilities,
+                    ..PlanContext::default()
+                },
+            );
+            let spec = &plan.target.spec;
+            assert!(spec.divert_presenter_sources.is_empty(), "{capabilities:?}");
+            assert!(!spec.presenter_click_native, "{capabilities:?}");
+            assert!(
+                !diverts(&plan, ButtonId::PresenterClick)
+                    && !diverts(&plan, ButtonId::PresenterPress),
+                "{capabilities:?}"
+            );
+        }
+        let plan = presenter_plan(&cfg, "mouse");
+        assert!(diverts(&plan, ButtonId::PresenterClick));
+    }
+
+    /// A host that cannot show the highlight leaves every presenter control
+    /// native: no raw-XY divert and no plain divert either.
+    #[test]
+    fn nothing_is_planned_for_a_presenter_on_a_host_without_the_overlay() {
+        let mut cfg = Config::default();
+        cfg.set_binding(
+            "spotlight",
+            ButtonId::PresenterClick,
+            Binding::Single(Action::PlayPause),
+        );
+        let capabilities = Capabilities {
+            presenter_highlight: true,
+            ..Capabilities::default()
+        };
+        let plan = plan_with_host(
+            &cfg,
+            "spotlight",
+            route(),
+            PlanContext {
+                os_mouse_hook_available: true,
+                capabilities: Some(&capabilities),
+                ..PlanContext::default()
+            },
+            false,
+        );
+        let spec = &plan.target.spec;
+        assert!(spec.divert_presenter_sources.is_empty());
+        assert!(!spec.presenter_click_native);
+        assert!(plan.dispatch.highlight_buttons.is_empty());
+        for button in [
+            ButtonId::PresenterTouch,
+            ButtonId::PresenterPress,
+            ButtonId::PresenterClick,
+        ] {
+            assert!(!diverts(&plan, button), "{button:?}");
+        }
+    }
+
+    #[test]
+    fn the_presenter_pointer_mode_is_resolved_per_device() {
+        let mut cfg = Config::default();
+        cfg.set_presenter(
+            "spotlight",
+            PresenterSettings {
+                pointer: HighlightPointer::Follow,
+                ..PresenterSettings::default()
+            },
+        );
+        let follow = presenter_plan(&cfg, "spotlight");
+        assert_eq!(follow.dispatch.highlight.pointer, HighlightPointer::Follow);
+        let other = presenter_plan(&cfg, "other");
+        assert_eq!(other.dispatch.highlight.pointer, HighlightPointer::Hide);
+    }
+
+    #[test]
+    fn the_presenter_appearance_is_resolved_per_device() {
+        let mut cfg = Config::default();
+        cfg.set_presenter(
+            "spotlight",
+            PresenterSettings {
+                laser_size: LaserSize::try_new(20).expect("in range"),
+                spotlight_size: SpotlightSize::MAX,
+                spotlight_dim: SpotlightDim::try_new(80).expect("in range"),
+                ..PresenterSettings::default()
+            },
+        );
+        let plan = presenter_plan(&cfg, "spotlight");
+        let look = plan.dispatch.highlight.appearance;
+        assert_eq!(
+            (look.laser_size, look.spotlight_size, look.spotlight_dim),
+            (20, 400, 80),
+            "the validated settings reach the plan"
+        );
+        let other = presenter_plan(&cfg, "other");
+        assert_eq!(
+            other.dispatch.highlight.appearance,
+            HighlightAppearance::default()
+        );
+    }
+
+    #[test]
+    fn the_presenter_motion_is_resolved_per_device() {
+        let mut cfg = Config::default();
+        cfg.set_presenter(
+            "spotlight",
+            PresenterSettings {
+                sensitivity: HighlightSensitivity::MIN,
+                precision: false,
+                steady_release: false,
+                ..PresenterSettings::default()
+            },
+        );
+        let plan = presenter_plan(&cfg, "spotlight");
+        let motion = plan.dispatch.highlight.motion;
+        assert_eq!(
+            (motion.sensitivity, motion.precision, motion.steady_release),
+            (25, false, false),
+            "the validated settings reach the plan"
+        );
+        let other = presenter_plan(&cfg, "other");
+        assert_eq!(other.dispatch.highlight.motion, HighlightMotion::default());
+    }
+
+    fn click_plan(action: Option<Action>) -> DeviceCapturePlan {
+        let mut cfg = Config::default();
+        if let Some(action) = action {
+            cfg.set_binding(
+                "spotlight",
+                ButtonId::PresenterClick,
+                Binding::Single(action),
+            );
+        }
+        presenter_plan(&cfg, "spotlight")
+    }
+
+    #[test]
+    fn the_presenter_click_stays_native_by_default_and_for_left_click() {
+        for action in [None, Some(Action::LeftClick)] {
+            let plan = click_plan(action.clone());
+            assert!(!diverts(&plan, ButtonId::PresenterClick), "{action:?}");
+            assert!(
+                plan.target.spec.presenter_click_native,
+                "native click is eligible for the stale-divert cleanup: {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_presenter_click_bound_to_none_is_swallowed() {
+        // Unlike a gesture source, `None` here is "do nothing": the native
+        // function is itself a click, so only a divert can suppress it.
+        let plan = click_plan(Some(Action::None));
+        assert!(diverts(&plan, ButtonId::PresenterClick));
+        assert!(!plan.target.spec.presenter_click_native);
+    }
+
+    #[test]
+    fn the_presenter_click_bound_to_another_action_is_plain_diverted() {
+        let plan = click_plan(Some(Action::PlayPause));
+        assert!(
+            plan.target
+                .spec
+                .divert_buttons
+                .contains(&PRESENTER_CLICK_SOURCE)
+        );
+        assert!(!plan.target.spec.presenter_click_native);
+        assert!(
+            plan.target.spec.divert_presenter_sources == PRESENTER_SOURCE_BUTTONS,
+            "the highlight levels are unaffected"
+        );
+    }
+
+    #[test]
+    fn presenter_bound_to_none_stays_native() {
+        let mut cfg = Config::default();
+        cfg.set_binding(
+            "spotlight",
+            ButtonId::PresenterTouch,
+            Binding::Single(Action::None),
+        );
+        let plan = presenter_plan(&cfg, "spotlight");
+        let spec = &plan.target.spec;
+        assert_eq!(
+            spec.divert_presenter_sources,
+            [PRESENTER_SOURCE_BUTTONS[1]],
+            "only the press level still highlights"
+        );
+        assert!(!diverts(&plan, ButtonId::PresenterTouch));
+    }
+
+    #[test]
+    fn presenter_bound_to_an_ordinary_action_is_plain_diverted() {
+        let mut cfg = Config::default();
+        cfg.set_binding(
+            "spotlight",
+            ButtonId::PresenterPress,
+            Binding::Single(Action::LeftClick),
+        );
+        let plan = presenter_plan(&cfg, "spotlight");
+        let spec = &plan.target.spec;
+        assert_eq!(spec.divert_presenter_sources, [PRESENTER_SOURCE_BUTTONS[0]]);
+        assert!(spec.divert_buttons.contains(&PRESENTER_SOURCE_BUTTONS[1]));
+    }
+
+    #[test]
+    fn releasing_a_control_releases_its_presenter_diversion() {
+        let mut plan = presenter_plan(&Config::default(), "spotlight");
+        let owned = BTreeMap::from([(PRESENTER_SOURCE_BUTTONS[0].0, ButtonId::PresenterTouch)]);
+        plan.release_controls(&owned);
+        assert_eq!(
+            plan.target.spec.divert_presenter_sources,
+            [PRESENTER_SOURCE_BUTTONS[1]]
         );
     }
 

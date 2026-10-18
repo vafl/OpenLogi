@@ -16,6 +16,7 @@ mod lighting;
 mod links;
 mod migrations;
 mod per_app;
+mod presenter;
 mod schema;
 mod wheel_hold;
 

@@ -206,6 +206,27 @@ pub enum Action {
     /// this to a balanced tap of the whole chord, exactly as they do for
     /// [`Action::HoldShortcut`].
     TapKeyHoldingModifiers(KeyCombo),
+    /// While the bound presenter control is held, show this on-screen effect.
+    ///
+    /// Handled agent-side (the agent publishes the held session to the
+    /// overlay) and never offered in the general action catalog: it is only
+    /// meaningful on the presenter's force-sensitive highlight button
+    /// ([`ButtonId::PresenterTouch`](crate::binding::ButtonId::PresenterTouch)
+    /// / [`ButtonId::PresenterPress`](crate::binding::ButtonId::PresenterPress)).
+    Highlight(HighlightEffect),
+}
+
+/// The on-screen effect a presenter's highlight button shows while held.
+///
+/// **Append-only:** this rides the IPC wire (inside [`Action::Highlight`] and
+/// the highlight observation), so serde's variant index is the encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HighlightEffect {
+    /// A red laser-pointer dot that follows the presenter's motion.
+    LaserDot,
+    /// A bright circle that follows the presenter's motion while the rest of
+    /// the screen is dimmed.
+    Spotlight,
 }
 
 /// Which of a held chord's keys stay down for the lifetime of the press.
@@ -347,6 +368,8 @@ macro_rules! derive_action_core {
                     Action::RunShellCommand(_) => "Run Command".into(),
                     Action::Workflow(steps) => format!("Workflow ({} steps)", steps.len()),
                     Action::OpenApplication(target) => format!("Open {}", target.display_name()),
+                    Action::Highlight(HighlightEffect::LaserDot) => "Laser Dot".into(),
+                    Action::Highlight(HighlightEffect::Spotlight) => "Spotlight".into(),
                     Action::HoldShortcut(combo) => format!("Hold {}", combo.rendered_label()),
                     Action::TapKeyHoldingModifiers(combo) => match combo.rendered_modifiers() {
                         Some(modifiers) => {
@@ -366,6 +389,12 @@ macro_rules! derive_action_core {
             pub fn translation_key(&self) -> Option<&'static str> {
                 match self {
                     $( Action::$variant => Some($translation_key), )*
+                    Action::Highlight(HighlightEffect::LaserDot) => {
+                        Some("actions.highlight_laser_dot")
+                    }
+                    Action::Highlight(HighlightEffect::Spotlight) => {
+                        Some("actions.highlight_spotlight")
+                    }
                     Action::SetDpiPreset(_)
                     | Action::CustomShortcut(_)
                     | Action::TypeText(_)
@@ -406,14 +435,16 @@ macro_rules! derive_action_core {
                     | Action::HoldShortcut(_)
                     | Action::TapKeyHoldingModifiers(_) => Category::Editing,
                     Action::SetDpiPreset(_) => Category::Dpi,
-                    Action::OpenApplication(_) => Category::System,
+                    Action::OpenApplication(_) | Action::Highlight(_) => Category::System,
                 }
             }
 
             /// All pickable actions in a deterministic order.
             ///
             /// [`Action::CustomShortcut`] is intentionally excluded — it is opened via
-            /// "Record shortcut…" (P1.3), not selected from the catalog. Table rows
+            /// "Record shortcut…" (P1.3), not selected from the catalog, and
+            /// [`Action::Highlight`] only ever binds to the presenter's highlight
+            /// button, so it is absent as well. Table rows
             /// tagged `not_pickable` are excluded from the catalog the same way.
             #[must_use]
             pub fn catalog() -> Vec<Action> {

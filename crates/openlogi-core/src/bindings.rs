@@ -46,8 +46,12 @@ pub fn button_bindings_for(
     let stored = config_key
         .map(|key| config.effective_bindings(key, app_bundle))
         .unwrap_or_default();
+    // `ButtonId::PRESENTER` rides along with `ALL` here (and only here) so a
+    // presenter's highlight defaults reach the divert plan without joining the
+    // mouse trigger lists that iterate `ALL`.
     let mut bindings: BTreeMap<ButtonId, Binding> = ButtonId::ALL
         .iter()
+        .chain(&ButtonId::PRESENTER)
         .copied()
         .map(|button| (button, Binding::Single(default_binding(button))))
         .collect();
@@ -147,6 +151,25 @@ mod tests {
     use crate::binding::{LongPressBinding, default_gesture_binding};
 
     use super::*;
+
+    #[test]
+    fn presenter_defaults_resolve_for_an_empty_config() {
+        let cfg = Config::default();
+        let bindings = button_bindings_for(&cfg, Some("2b042"), None);
+        assert_eq!(
+            bindings.get(&ButtonId::PresenterTouch),
+            Some(&Binding::Single(Action::Highlight(
+                crate::binding::HighlightEffect::LaserDot
+            )))
+        );
+        assert_eq!(
+            bindings.get(&ButtonId::PresenterPress),
+            Some(&Binding::Single(Action::Highlight(
+                crate::binding::HighlightEffect::Spotlight
+            )))
+        );
+        assert!(cfg.effective_bindings("2b042", None).is_empty());
+    }
 
     #[test]
     fn click_less_gesture_keeps_default_click_in_projection() {
