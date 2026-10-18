@@ -9,7 +9,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     v_flex,
 };
-use openlogi_core::device::{Capabilities, DeviceKind};
+use openlogi_core::device::{Capabilities, DeviceKind, HIGHLIGHT_OVERLAY_SUPPORTED};
 use openlogi_ipc::InventoryHealth;
 use tracing::info;
 
@@ -23,6 +23,7 @@ use crate::features::lighting::standalone::LightPanel;
 use crate::features::mouse::view::MouseModelView;
 use crate::features::pointer::dpi::DpiPanel;
 use crate::features::pointer::smartshift::SmartShiftPanel;
+use crate::features::presenter::PresenterPanel;
 use crate::features::profiles::{AppCatalogPicker, ProfileIconCache};
 use crate::services::assets::user_cache_root;
 use crate::state::{AgentLink, AppState, DeviceRecord, StateEvent, StateEvents};
@@ -71,6 +72,8 @@ enum Route {
 enum DetailTab {
     /// The mouse model with clickable button hotspots.
     Buttons,
+    /// A presenter's force-sensing highlight button: effects, pressure, haptics.
+    Presenter,
     /// Cursor-centred eight-slot action launcher.
     ActionsRing,
     /// The keyboard function-row remapper with clickable F-key bubbles.
@@ -121,6 +124,11 @@ impl DetailTab {
         // leads with the live preview, then the generic info tab.
         if matches!(record.kind, DeviceKind::Camera) {
             tabs.push(Self::Camera);
+        }
+        // A presenter's highlight button is its main screen, so it leads —
+        // but only where this host renders the highlight it configures.
+        if caps.presenter_highlight && HIGHLIGHT_OVERLAY_SUPPORTED {
+            tabs.push(Self::Presenter);
         }
         if caps.buttons && can_show_mouse_model {
             tabs.push(Self::Buttons);
@@ -174,6 +182,7 @@ impl DetailTab {
     fn label(self) -> gpui::SharedString {
         match self {
             Self::Buttons => tr!("device.buttons"),
+            Self::Presenter => tr!("device.presenter"),
             Self::ActionsRing => tr!("action_ring.actions_ring"),
             Self::Keys => tr!("device.keys"),
             Self::Pointer => tr!("device.pointer"),
@@ -190,6 +199,7 @@ pub struct AppView {
     route: Route,
     mouse_model: Entity<MouseModelView>,
     action_ring_panel: Entity<ActionRingPanel>,
+    presenter_panel: Entity<PresenterPanel>,
     keyboard_model: Entity<FunctionRowView>,
     dpi_panel: Entity<DpiPanel>,
     smartshift_panel: Entity<SmartShiftPanel>,
@@ -272,6 +282,7 @@ impl AppView {
 
         let mouse_model = cx.new(|cx| MouseModelView::new(window, cx));
         let action_ring_panel = cx.new(ActionRingPanel::new);
+        let presenter_panel = cx.new(|cx| PresenterPanel::new(window, cx));
         let keyboard_model = cx.new(FunctionRowView::new);
         let dpi_panel = cx.new(DpiPanel::new);
         let smartshift_panel = cx.new(SmartShiftPanel::new);
@@ -293,6 +304,7 @@ impl AppView {
             route: Route::Home,
             mouse_model,
             action_ring_panel,
+            presenter_panel,
             keyboard_model,
             dpi_panel,
             smartshift_panel,
@@ -667,6 +679,7 @@ impl AppView {
                     &detail::DetailPanels {
                         mouse_model: &self.mouse_model,
                         action_ring: &self.action_ring_panel,
+                        presenter: &self.presenter_panel,
                         keyboard_model: &self.keyboard_model,
                         dpi_panel: &self.dpi_panel,
                         smartshift_panel: &self.smartshift_panel,

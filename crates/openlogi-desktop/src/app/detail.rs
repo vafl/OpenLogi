@@ -31,6 +31,7 @@ use crate::features::lighting::visual as light_visual;
 use crate::features::mouse::view::MouseModelView;
 use crate::features::pointer::dpi::DpiPanel;
 use crate::features::pointer::smartshift::SmartShiftPanel;
+use crate::features::presenter::PresenterPanel;
 use crate::features::profiles::{
     AppCatalogPicker, ProfileIconCache, action_ring_profile_scope_bar, button_profile_scope_bar,
 };
@@ -93,6 +94,7 @@ pub(super) fn detail_header(
 pub(super) struct DetailPanels<'a> {
     pub mouse_model: &'a gpui::Entity<MouseModelView>,
     pub action_ring: &'a gpui::Entity<ActionRingPanel>,
+    pub presenter: &'a gpui::Entity<PresenterPanel>,
     pub keyboard_model: &'a gpui::Entity<FunctionRowView>,
     pub dpi_panel: &'a gpui::Entity<DpiPanel>,
     pub smartshift_panel: &'a gpui::Entity<SmartShiftPanel>,
@@ -124,6 +126,7 @@ pub(super) fn detail_content(
         DetailTab::ActionsRing => {
             action_ring_tab(panels.action_ring, profile_icons, app_catalog, cx).into_any_element()
         }
+        DetailTab::Presenter => presenter_tab(panels.presenter).into_any_element(),
         DetailTab::Keys => keys_tab(panels.keyboard_model).into_any_element(),
         DetailTab::Pointer => {
             pointer_tab(panels.dpi_panel, panels.smartshift_panel, cx).into_any_element()
@@ -242,6 +245,7 @@ fn detail_navigation(
 fn detail_tab_icon(tab: DetailTab) -> &'static str {
     match tab {
         DetailTab::Buttons => "action-icons/mouse-pointer-click.svg",
+        DetailTab::Presenter => "action-icons/circle-dot.svg",
         DetailTab::ActionsRing => "action-icons/layout-grid.svg",
         DetailTab::Keys => "action-icons/keyboard.svg",
         DetailTab::Pointer => "action-icons/gauge.svg",
@@ -279,6 +283,11 @@ fn tab_body(
         .overflow_y_scrollbar()
         .p(SCREEN_PAD.rems())
         .child(div().w_full().max_w(width.rems()).child(content))
+}
+
+/// Presenter tab: the highlight button's effects, pressure and haptics.
+fn presenter_tab(panel: &gpui::Entity<PresenterPanel>) -> impl IntoElement {
+    tab_body(ContentWidth::Medium, panel.clone())
 }
 
 /// Keys tab: the function-row remapper for a keyboard.

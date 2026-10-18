@@ -265,6 +265,42 @@ pub(crate) fn slider_row(
         .child(slider)
 }
 
+/// Width of a setting row's picker, enough for the longest translated option.
+pub(crate) const SELECT_W: f32 = 168.;
+
+/// Width of a colour field: `ffffff` plus the input's padding.
+const COLOR_FIELD_W: f32 = 104.;
+
+/// A colour's text field with a live preview of the colour beside it, read as
+/// one group. `selector` names the group's parts for layout tests:
+/// `{selector}-preview` and `{selector}-field`.
+pub(crate) fn color_input(
+    selector: &'static str,
+    pal: theme::Palette,
+    color: Rgb,
+    input: &Entity<InputState>,
+) -> impl IntoElement {
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(
+            div()
+                .debug_selector(move || format!("{selector}-preview"))
+                .flex_none()
+                .size(px(theme::CONTROL_H))
+                .rounded(pal.control_radius)
+                .border_1()
+                .border_color(pal.border)
+                .bg(rgb(color.packed())),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("{selector}-field"))
+                .w(px(COLOR_FIELD_W))
+                .child(control_input(input)),
+        )
+}
+
 const SWATCH: f32 = 28.;
 
 /// One colour swatch of a preset palette, a radio button in its group. `group`
