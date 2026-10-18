@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CameraControls, Config, DeviceIdentity, LightSettings, Lighting, ScrollResolution, SmartShift,
+    CameraControls, Config, DeviceIdentity, HighlightAppearance, HighlightMotion, HighlightPointer,
+    LightSettings, Lighting, PresenterSettings, ScrollResolution, SmartShift,
     ThumbwheelSensitivity,
 };
 use crate::binding::{
@@ -326,6 +327,40 @@ impl Config {
             .entry(device_key.to_string())
             .or_default()
             .report_rate = Some(rate);
+    }
+    /// The presenter settings for `device_key`, or `None` when the config has
+    /// no `[presenter]` table for it (the agent then applies the defaults).
+    #[must_use]
+    pub fn presenter(&self, device_key: &str) -> Option<PresenterSettings> {
+        self.devices.get(device_key).and_then(|d| d.presenter)
+    }
+    /// What the pointer does during `device_key`'s presenter highlight: the
+    /// configured mode, else the default.
+    #[must_use]
+    pub fn presenter_pointer(&self, device_key: &str) -> HighlightPointer {
+        self.presenter(device_key)
+            .map(|presenter| presenter.pointer)
+            .unwrap_or_default()
+    }
+    /// How `device_key`'s presenter highlight is drawn: the configured
+    /// appearance, else the defaults.
+    #[must_use]
+    pub fn presenter_appearance(&self, device_key: &str) -> HighlightAppearance {
+        self.presenter(device_key).unwrap_or_default().appearance()
+    }
+    /// How `device_key`'s presenter highlight moves: the configured motion,
+    /// else the defaults.
+    #[must_use]
+    pub fn presenter_motion(&self, device_key: &str) -> HighlightMotion {
+        self.presenter(device_key).unwrap_or_default().motion()
+    }
+    /// Record the presenter settings for `device_key`; the agent applies them
+    /// to the device on its next reload and whenever it reconnects.
+    pub fn set_presenter(&mut self, device_key: &str, presenter: PresenterSettings) {
+        self.devices
+            .entry(device_key.to_string())
+            .or_default()
+            .presenter = Some(presenter);
     }
     /// Record the SmartShift wheel config for `device_key`, so the agent can
     /// re-apply it when the device reconnects (#189).

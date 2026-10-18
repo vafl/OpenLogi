@@ -23,7 +23,7 @@ use crate::features::binding_editor::{
 };
 use crate::state::AppState;
 use crate::ui::action::localized_action_label;
-use crate::ui::components::{MenuRow, Toggle, control_button, control_input, toggle_row};
+use crate::ui::components::{MenuRow, Toggle, control_button, control_input, setting_row};
 use crate::ui::theme::{self, ACCENT_BLUE, Palette, Typography as _};
 
 pub(super) const INSPECTOR_W: f32 = 328.;
@@ -309,7 +309,7 @@ fn wheel_hold_row(
     pal: Palette,
 ) -> impl IntoElement {
     let observer = view.clone();
-    toggle_row(
+    setting_row(
         "inspector-wheel-hold-row",
         pal,
         tr!("actions.hold_to_scroll_sideways"),

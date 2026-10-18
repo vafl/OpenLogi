@@ -27,6 +27,7 @@ mod lighting;
 mod litra;
 mod os_layout;
 mod pointer_scaling;
+mod presenter;
 mod report_rate;
 mod smartshift;
 
@@ -69,6 +70,11 @@ pub use openlogi_core::hid::{
 pub use openlogi_core::hid::{ReportRate, ReportRateInfo};
 pub use os_layout::{HostOs, OsLayoutOutcome, OsVersion, keep_os_layout_on};
 pub use pointer_scaling::{PointerScaling, get_pointer_scaling, set_pointer_scaling};
+pub use presenter::{
+    ForceButtonCapabilities, ForceButtonConfig, ForceButtonState, ForceConfigRejection,
+    ForceLevelMode, HapticsApplied, LevelModeApplied, PresenterApplied, ThresholdsApplied,
+    apply_presenter_settings_on, read_force_buttons, set_force_level_mode, set_force_thresholds,
+};
 pub use report_rate::{
     get_report_rate_info, get_report_rate_info_on, set_report_rate, set_report_rate_on,
 };

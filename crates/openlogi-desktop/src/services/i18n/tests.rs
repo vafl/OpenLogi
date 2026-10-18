@@ -18,6 +18,7 @@ fn typed_translation_keys_resolve() {
 
     for b in ButtonId::ALL
         .into_iter()
+        .chain(ButtonId::PRESENTER)
         .chain(KNOWN_CONTROLS.iter().map(|control| ButtonId::Control(control.id)))
         // A control with no catalog row resolves to the one generic key.
         .chain([ButtonId::control(0xffff)])

@@ -72,6 +72,12 @@ pub(super) struct CaptureAccum {
     /// Diverted standard-button and wheel-hold CIDs held in the last event,
     /// in press order.
     buttons_down: Vec<u16>,
+    /// Presenter CIDs held in the last event, in press order. While any is
+    /// held (and no gesture source owns the raw-XY stream) raw-XY is motion.
+    presenter_down: Vec<u16>,
+    /// The next presenter raw-XY sample must be dropped: the first one after a
+    /// fresh press is garbage (the sensor's accumulated backlog).
+    presenter_skip_first_raw_xy: bool,
 }
 
 #[cfg(test)]
@@ -224,9 +230,58 @@ impl CaptureAccum {
         }
     }
 
+    /// Emit each presenter control's own press/release edge for a decoded
+    /// `0x1b04` event (raw-XY is attributed by [`Self::on_event`]). Presenter
+    /// holds are never gesture-recognised, so overlapping holds simply
+    /// interleave.
+    pub(super) fn on_presenter_event(
+        &mut self,
+        event: RawControlEvent,
+        presenter_cids: &[(u16, ButtonId)],
+        sink: &mpsc::UnboundedSender<CapturedInput>,
+    ) {
+        let RawControlEvent::DivertedButtons(cids) = event else {
+            return;
+        };
+        let was_empty = self.presenter_down.is_empty();
+        // Downs before ups: the firmware swaps force levels in ONE report
+        // (`[0x00d8]` -> `[0x01a8]`), and the dispatcher must see the new
+        // button down while the old one is still held so the highlight
+        // retargets instead of ending.
+        for &(cid, button) in presenter_cids {
+            if cids.contains(&cid) && !self.presenter_down.contains(&cid) {
+                let _ = sink.send(CapturedInput::ButtonDown(button));
+                self.presenter_down.push(cid);
+            }
+        }
+        for &(cid, button) in presenter_cids {
+            if !cids.contains(&cid) && self.presenter_down.contains(&cid) {
+                let _ = sink.send(CapturedInput::ButtonUp(button));
+                self.presenter_down.retain(|&c| c != cid);
+            }
+        }
+        // Only a hold that starts from nothing drops its first sample. A force
+        // swap never empties `presenter_down` (the new level goes down before
+        // the old one comes up), so it does not re-arm the skip: verified on a
+        // Spotlight 2, motion keeps streaming through touch/press swaps.
+        if was_empty && !self.presenter_down.is_empty() {
+            self.presenter_skip_first_raw_xy = true;
+        }
+    }
+
     fn on_raw_xy(&mut self, dx: i16, dy: i16, sink: &mpsc::UnboundedSender<CapturedInput>) {
         // Motion is attributed to the holding source; outside a hold the report
-        // is stray and dropped.
+        // is stray unless a presenter control is held.
+        if matches!(self.hold, HoldState::Idle) {
+            if self.presenter_down.is_empty() {
+                return;
+            }
+            if std::mem::take(&mut self.presenter_skip_first_raw_xy) {
+                return;
+            }
+            let _ = sink.send(CapturedInput::Motion { dx, dy });
+            return;
+        }
         let HoldState::Holding {
             button,
             swipe,

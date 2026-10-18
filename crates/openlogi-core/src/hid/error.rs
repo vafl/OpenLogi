@@ -208,6 +208,39 @@ pub enum WriteError {
         /// The name the device reports afterwards, if any.
         actual: Option<String>,
     },
+    /// The device acknowledged a write of a presenter's `0x19c0` force level
+    /// reporting mode but still reports another mode, after one delayed
+    /// re-read.
+    ///
+    /// Transient: a freshly connected device can answer with its stale mode
+    /// for a while, so a later attempt may succeed. The agent retries this
+    /// and a request timeout, and treats every other presenter error as
+    /// permanent.
+    #[error("force button reports level mode {actual:#04x} after a write of {requested:#04x}")]
+    ForceLevelModeNotApplied {
+        /// The raw level-reporting mode that was written.
+        requested: u8,
+        /// The raw level-reporting mode the device reports afterwards.
+        actual: u8,
+    },
+    /// The device acknowledged a write of a presenter's `0x19c0` force
+    /// thresholds but reads back others — the firmware owns them.
+    ///
+    /// Permanent: a retry writes the same values again.
+    #[error(
+        "force button reports thresholds {actual_touch}/{actual_press} \
+         after a write of {requested_touch}/{requested_press}"
+    )]
+    ForceThresholdsNotApplied {
+        /// The touch threshold that was written.
+        requested_touch: u16,
+        /// The press threshold that was written.
+        requested_press: u16,
+        /// The touch threshold the device reports afterwards.
+        actual_touch: u16,
+        /// The press threshold the device reports afterwards.
+        actual_press: u16,
+    },
 }
 
 /// HID++ operation being performed when a device write/read failed.
@@ -270,6 +303,10 @@ pub enum HidppOperation {
     /// Write an Easy-Switch slot's `0x1815` host name. Appended last —
     /// variant order is wire format.
     RenameHost,
+    /// Configure a presenter's `0x19c0` force-sensing button when it comes
+    /// online; its haptics errors carry [`Self::PlayHaptic`]. Appended last —
+    /// variant order is wire format.
+    ConfigurePresenter,
 }
 
 /// HID++ feature error kind in a serializable wire-safe form.

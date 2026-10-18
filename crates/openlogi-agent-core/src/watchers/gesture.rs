@@ -44,6 +44,7 @@ use crate::capture_plan::{
     CapturePublication, CaptureTarget, DeviceCapturePlan, DispatchPlan, SharedCapturePlans,
 };
 use crate::hardware::DeviceAccess;
+use crate::highlight::HighlightSession;
 use crate::receiver_access::{ReceiverAccess, ReceiverRequestState, SessionReceiverLease};
 use crate::runtime::hook::SharedHookMaps;
 use crate::runtime::scroll::ScrollInputHandle;
@@ -55,6 +56,7 @@ pub struct GestureOutputs {
     actions: ActionDispatcher,
     scroll: ScrollInputHandle,
     hook_maps: SharedHookMaps,
+    highlight: Arc<HighlightSession>,
 }
 
 impl GestureOutputs {
@@ -64,11 +66,13 @@ impl GestureOutputs {
         actions: ActionDispatcher,
         scroll: ScrollInputHandle,
         hook_maps: SharedHookMaps,
+        highlight: Arc<HighlightSession>,
     ) -> Self {
         Self {
             actions,
             scroll,
             hook_maps,
+            highlight,
         }
     }
 
@@ -225,6 +229,8 @@ fn same_bindings(a: &DispatchPlan, b: &DispatchPlan) -> bool {
         side_gesture_bindings,
         thumbwheel_sensitivity,
         invert_wheel,
+        highlight,
+        highlight_buttons,
         pointer_target: _,
     } = a;
     *config_key == b.config_key
@@ -233,6 +239,8 @@ fn same_bindings(a: &DispatchPlan, b: &DispatchPlan) -> bool {
         && *side_gesture_bindings == b.side_gesture_bindings
         && *thumbwheel_sensitivity == b.thumbwheel_sensitivity
         && *invert_wheel == b.invert_wheel
+        && *highlight == b.highlight
+        && *highlight_buttons == b.highlight_buttons
 }
 
 fn reconcile_session(
@@ -242,11 +250,13 @@ fn reconcile_session(
 ) {
     // A swipe that switches desktops moves the pointer onto another window,
     // republishing an otherwise identical plan. Keep the hold so the same
-    // press can chain further swipes (#1634).
+    // press can chain further swipes (#1634). A presenter's highlight hold
+    // survives any republish the same way: the overlay's position reports move
+    // the pointer, which republishes the plan for the app under it.
     let pointer_only = wanted.is_some_and(|(_, plan)| same_bindings(session.dispatch(), plan));
     if session.reconcile_with(wanted, stop_for_target_change) == ReconcileAction::DispatchChanged {
         if !pointer_only {
-            dispatcher.cancel_session(session.id());
+            dispatcher.cancel_bindings(session.id());
         }
         let config_key = session.dispatch().config_key.clone();
         session.rekey(&config_key);

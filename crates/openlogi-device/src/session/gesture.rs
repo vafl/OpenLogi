@@ -101,6 +101,14 @@ pub enum CapturedInput {
         /// the wheel's `0x2121` multiplier for a high-resolution one.
         per_notch: NonZeroU8,
     },
+    /// Raw pointer motion while a presenter control is held. The OS cursor
+    /// does not move; the agent accumulates it into the highlight's travel.
+    Motion {
+        /// Horizontal delta, positive to the right.
+        dx: i16,
+        /// Vertical delta, positive downwards.
+        dy: i16,
+    },
     /// Main-wheel movement the firmware reports over `0x2121` instead of
     /// scrolling, while the session diverts the wheel so the agent can post
     /// smoothed scrolling for it.
@@ -162,6 +170,30 @@ pub const GESTURE_SOURCE_BUTTONS: [(u16, ButtonId); 3] = [
     (reprog_controls::HAPTIC_PANEL_CID, ButtonId::HapticPanel),
 ];
 
+/// Presenter highlight sources: the Spotlight 2's force-sensitive top button
+/// reports as two `0x1b04` controls, one per force level, each delivering its
+/// own [`ButtonId`]. They are diverted with raw-XY and forwarded live as
+/// [`CapturedInput::ButtonDown`]/[`CapturedInput::ButtonUp`]/[`CapturedInput::Motion`]
+/// (not gesture-recognised).
+pub const PRESENTER_SOURCE_BUTTONS: [(u16, ButtonId); 2] = [
+    (
+        reprog_controls::PRESENTER_TOUCH_CID,
+        ButtonId::PresenterTouch,
+    ),
+    (
+        reprog_controls::PRESENTER_PRESS_CID,
+        ButtonId::PresenterPress,
+    ),
+];
+
+/// The presenter's short-click control and the [`ButtonId`] it delivers. Not a
+/// raw-XY source: it is diverted as a plain press only when its binding is not
+/// the native left click, and is otherwise left (or handed back to) native.
+pub const PRESENTER_CLICK_SOURCE: (u16, ButtonId) = (
+    reprog_controls::PRESENTER_CLICK_CID,
+    ButtonId::PresenterClick,
+);
+
 /// Which of one device's controls a capture session should divert.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CaptureSpec {
@@ -175,6 +207,17 @@ pub struct CaptureSpec {
     /// Standard-button CIDs requested as raw-XY gesture sources. A control is
     /// armed only when its HID++ capability flags advertise raw-XY support.
     pub divert_gesture_buttons: Vec<(u16, ButtonId)>,
+    /// Presenter highlight sources ([`PRESENTER_SOURCE_BUTTONS`] members) the
+    /// agent forwards live. Each is diverted with raw-XY when the control
+    /// supports it, else as a plain press (edges still arrive, motion does
+    /// not).
+    pub divert_presenter_sources: Vec<(u16, ButtonId)>,
+    /// The presenter's short click ([`PRESENTER_CLICK_SOURCE`]) stays native.
+    /// On a device that exposes the presenter controls, arming then hands that
+    /// control back to the firmware if something left it diverted (Logi
+    /// Options+ does when it exits uncleanly), which would otherwise swallow
+    /// every click of the button.
+    pub presenter_click_native: bool,
     /// Buttons to divert as plain presses (no raw-XY): the
     /// [`DIVERTABLE_STANDARD_BUTTONS`] and non-gesturing
     /// [`GESTURE_SOURCE_BUTTONS`] whose binding leaves the default.
@@ -255,6 +298,7 @@ impl ArmedCapture for GestureCapture {
             index = device_index,
             gesture_sources = armed.gesture_cids.len(),
             gesture_buttons = armed.gesture_button_cids.len(),
+            presenter_sources = armed.presenter_cids.len(),
             dpi_buttons = armed.dpi_cids.len(),
             buttons = armed.button_cids.len(),
             wheel_buttons = armed.wheel_button_cids.len(),
@@ -294,6 +338,7 @@ impl ArmedCapture for GestureCapture {
             .copied()
             .collect();
         let wheel_set = armed.wheel_button_cids.clone();
+        let presenter_set = armed.presenter_cids.clone();
         let hires_per_notch = armed.hires_per_notch;
         let main_wheel = armed
             .main_wheel
@@ -306,6 +351,7 @@ impl ArmedCapture for GestureCapture {
                 // Recover the guard even if a prior holder panicked — the
                 // critical section is panic-free, so the data is consistent.
                 let mut acc = accum.lock().unwrap_or_else(PoisonError::into_inner);
+                acc.on_presenter_event(event, &presenter_set, &sink);
                 acc.on_event(
                     event,
                     &gesture_cids,

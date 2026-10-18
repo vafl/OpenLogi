@@ -503,7 +503,9 @@ impl From<WriteError> for ApiError {
             | WriteError::HostNameRejected { .. } => "invalid_value",
             WriteError::DpiNotApplied { .. }
             | WriteError::ReportRateNotApplied { .. }
-            | WriteError::HostNameNotApplied { .. } => "readback_mismatch",
+            | WriteError::HostNameNotApplied { .. }
+            | WriteError::ForceLevelModeNotApplied { .. }
+            | WriteError::ForceThresholdsNotApplied { .. } => "readback_mismatch",
             _ => "device_error",
         };
         Self::new(code, error.to_string())

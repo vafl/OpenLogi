@@ -13,6 +13,7 @@ openlogi diag pointer-speed             # test 0x2205 pointer scaling and attemp
 openlogi diag smartshift                # toggle SmartShift and restore (smoke test)
 openlogi diag smartshift --torque 60    # set scrolling force / feedback intensity (1-100%)
 openlogi diag lighting ff0000           # solid colour for a wired RGB keyboard (any RRGGBB hex)
+openlogi diag force                     # Spotlight 2: read or set the highlight button's force thresholds / level reporting (settings tool: does not restore)
 ```
 
 Running `openlogi` with no subcommand defaults to `list`. Set

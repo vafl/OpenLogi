@@ -324,6 +324,25 @@ async fn agent_side_dpi_rejections_use_the_same_codes_as_local_checks() {
     }
 }
 
+#[test]
+fn presenter_readback_failures_use_the_readback_mismatch_code() {
+    for error in [
+        WriteError::ForceLevelModeNotApplied {
+            requested: 3,
+            actual: 1,
+        },
+        WriteError::ForceThresholdsNotApplied {
+            requested_touch: 93,
+            requested_press: 300,
+            actual_touch: 140,
+            actual_press: 350,
+        },
+    ] {
+        let value = serde_json::to_value(super::output::ApiError::from(error)).unwrap();
+        assert_eq!(value["code"], "readback_mismatch");
+    }
+}
+
 #[tokio::test]
 async fn smartshift_preserves_unspecified_fields_and_reads_back() {
     let before = SmartShiftStatus {

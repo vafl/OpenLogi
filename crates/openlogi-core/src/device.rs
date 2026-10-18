@@ -91,6 +91,15 @@ impl DeviceKind {
     }
 }
 
+/// Whether this host can show a presenter highlight: the overlay's
+/// click-through highlight window, moving the pointer to the dot and hiding it
+/// are implemented on macOS only. The one owner of that fact: the capture plan
+/// leaves the presenter controls native where it is `false`, the agent writes
+/// no presenter settings to the device, the overlay opens no window and the
+/// settings app shows no Presenter tab. [`Capabilities::presenter_highlight`]
+/// stays a device fact and is published regardless.
+pub const HIGHLIGHT_OVERLAY_SUPPORTED: bool = cfg!(target_os = "macos");
+
 /// What a device can be *configured* to do, derived from the HID++ feature
 /// table it reports (feature `0x0001`). This is the source of truth for which
 /// configuration panels the UI offers — a panel shows iff the device exposes
@@ -167,6 +176,14 @@ pub struct Capabilities {
     /// persisted identity.
     #[serde(default)]
     pub virtual_thumbwheel: bool,
+    /// The device is a presenter whose force-sensing highlight button can be
+    /// configured and bound — HID++ `0x19c0 ForceSensingButton` plus a
+    /// divertable raw-XY touch control (CID `0x00d8`) in the `0x1b04` control
+    /// table. The `0x19c0` feature alone is not enough: the MX Master 4 has it
+    /// too, without that control. Appended: crosses the IPC and the persisted
+    /// identity.
+    #[serde(default)]
+    pub presenter_highlight: bool,
 }
 
 impl Capabilities {
@@ -201,6 +218,9 @@ impl Capabilities {
             // Set by the `0x1b04` control walk; the feature table alone
             // cannot say which controls report raw wheel.
             virtual_thumbwheel: false,
+            // Set by the `0x1b04` control walk together with `0x19c0`; the
+            // feature table alone cannot tell a presenter from an MX Master 4.
+            presenter_highlight: false,
         }
     }
 
@@ -592,6 +612,7 @@ mod tests {
                     backlight: false,
                     easy_switch: false,
                     virtual_thumbwheel: false,
+                    presenter_highlight: false,
                 }),
                 settings_revision: 0,
             }],
@@ -710,8 +731,10 @@ mod tests {
                 backlight: false,
                 easy_switch: false,
                 virtual_thumbwheel: false,
+                presenter_highlight: false,
             }
         );
+        assert!(!Capabilities::from_feature_ids(&[0x0003, 0x19c0]).presenter_highlight);
         assert!(!Capabilities::from_feature_ids(&[0x0003, 0x1b04]).thumbwheel);
         // A wired G-series keyboard: PerKeyLighting (0x8080), no DPI/buttons.
         let keyboard = Capabilities::from_feature_ids(&[0x0001, 0x8080]);
@@ -733,6 +756,7 @@ mod tests {
                 backlight: false,
                 easy_switch: false,
                 virtual_thumbwheel: false,
+                presenter_highlight: false,
             }
         );
         // No driving features → nothing offered.
