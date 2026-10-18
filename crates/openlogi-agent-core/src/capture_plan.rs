@@ -319,6 +319,10 @@ pub fn plan_for_device(
                     .collect(),
                 divert_gesture_buttons,
                 divert_buttons,
+                // The presenter controls stay native: no binding reaches them
+                // yet.
+                divert_presenter_sources: Vec::new(),
+                presenter_click_native: false,
                 divert_wheel_buttons,
                 // Needs the device's wheel capabilities and the settings of
                 // its current link, so the orchestrator fills it in.

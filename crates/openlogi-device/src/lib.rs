@@ -68,11 +68,12 @@ pub use session::keyboard::{
 };
 pub use write::{
     Dpi, DpiCapabilities, DpiInfo, EasySwitchHosts, EasySwitchSlot, FeatureEntry, FirmwareEntity,
-    FirmwareEntityInfo, HapticWaveform, HidppFeatureErrorKind, HidppOperation, HostConnection,
-    HostOs, HostOsInfo, HostOsKind, LITRA_BEAM_PRODUCT_ID, LITRA_GLOW_PRODUCT_ID, LightChange,
-    LightCommand, LightControls, LightWatch, LightingMethod, LitraDescriptor, LitraModel,
-    OsLayoutOutcome, OsMask, OsVersion, ReportRate, ReportRateInfo, ReprogControlEntry,
-    ScrollReportingTarget, ScrollResolution, ScrollWheelMode, WriteError, apply_litra,
+    FirmwareEntityInfo, HapticWaveform, HapticsApplied, HidppFeatureErrorKind, HidppOperation,
+    HostConnection, HostOs, HostOsInfo, HostOsKind, LITRA_BEAM_PRODUCT_ID, LITRA_GLOW_PRODUCT_ID,
+    LevelModeApplied, LightChange, LightCommand, LightControls, LightWatch, LightingMethod,
+    LitraDescriptor, LitraModel, OsLayoutOutcome, OsMask, OsVersion, PresenterApplied, ReportRate,
+    ReportRateInfo, ReprogControlEntry, ScrollReportingTarget, ScrollResolution, ScrollWheelMode,
+    ThresholdsApplied, WriteError, apply_litra, apply_presenter_settings_on,
     commands_for_light_settings, dump_features, dump_firmware_entities, dump_reprog_controls,
     encode_litra_command, ensure_haptics_armed_on, find_litra, get_backlight, get_backlight_on,
     get_dpi, get_dpi_info, get_dpi_info_on, get_easy_switch_hosts, get_easy_switch_hosts_on,

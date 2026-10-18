@@ -69,6 +69,31 @@ pub const MULTIPLATFORM_GESTURE_BUTTON_CID: u16 = control_ids::MULTIPLATFORM_GES
 /// The typed source of truth is [`control_ids::HAPTIC_PANEL`].
 pub const HAPTIC_PANEL_CID: u16 = control_ids::HAPTIC_PANEL.0;
 
+/// Control ID of the Spotlight 2 presenter's top button at its first force
+/// level ("touch") — `0x1b04` v6 reports it as "Cursor Button Long Press"
+/// and flags it raw-XY capable. Its task ID is `SW_CUSTOM_HIGHLIGHT`
+/// (`0x00b7`). Diverted with raw-XY, the device streams ~100 Hz relative
+/// motion while the button is held instead of moving the OS cursor.
+///
+/// The typed source of truth is [`control_ids::CURSOR_BUTTON_LONG_PRESS`].
+pub const PRESENTER_TOUCH_CID: u16 = control_ids::CURSOR_BUTTON_LONG_PRESS.0;
+
+/// Control ID of the Spotlight 2 presenter's top button at its second force
+/// level ("firm press"). Like [`PRESENTER_TOUCH_CID`] it is divertable and
+/// raw-XY capable on `0x1b04` v6; its task ID is `SW_CUSTOM_HIGHLIGHT_2`
+/// (`0x00bb`).
+///
+/// The typed source of truth is [`control_ids::CURSOR_BUTTON_FIRM_PRESS`].
+pub const PRESENTER_PRESS_CID: u16 = control_ids::CURSOR_BUTTON_FIRM_PRESS.0;
+
+/// Control ID of the Spotlight 2 presenter's top button as a short click
+/// (task "Left Click", `0x1b04` CID `0x0050`). Left native it emits an
+/// ordinary mouse left click; diverted it reports nothing to the host, so
+/// whatever diverted it last must hand it back.
+///
+/// The typed source of truth is [`control_ids::LEFT_BUTTON`].
+pub const PRESENTER_CLICK_CID: u16 = control_ids::LEFT_BUTTON.0;
+
 /// Control IDs of the "DPI / ModeShift" button family. Whichever a device
 /// exposes (and can divert) is captured and mapped to
 /// [`ButtonId::DpiToggle`](openlogi_core::binding::ButtonId::DpiToggle): the MX

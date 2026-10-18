@@ -60,6 +60,8 @@ receiver discovery can enable notifications and request arrival reports.
 | `diag smartshift --sensitivity N` | Sets sensitivity without restoring the previous value; preserves the current mode |
 | `diag smartshift --leave-flipped` | Toggles mode and intentionally skips restoration |
 | `diag lighting` | Writes lighting; not an observation-only diagnostic |
+| `diag force` without `--button` | Reads force-sensing button thresholds and level mode |
+| `diag force --button N --set/--mode` | Writes thresholds or level reporting mode; does not restore the previous value |
 
 Diagnostic `--device` uses the first case-insensitive substring match. If names
 overlap, do not treat it as unique selection. Resolve the target before writes.

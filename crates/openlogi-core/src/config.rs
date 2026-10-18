@@ -22,6 +22,7 @@ mod key_trigger;
 mod migrate;
 mod per_app;
 mod per_device;
+mod presenter;
 mod revision;
 mod settings;
 mod wheel_hold;
@@ -42,6 +43,7 @@ use file::{backup_existing_config, config_backup_path};
 pub use function_key::FunctionKey;
 pub use identity::canonical_device_key;
 pub use key_trigger::{KeyModifiers, KeyTrigger, KeyboardConfig, ParseTriggerError};
+pub use presenter::{ForceThreshold, PresenterSettings};
 pub use revision::ConfigRevision;
 pub use settings::LightSettings;
 pub use settings::{

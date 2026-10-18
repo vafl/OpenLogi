@@ -30,6 +30,22 @@ use super::{HidppOperation, WriteError, classify_hidpp_error, with_route};
 /// location would ever be cached.
 const STATUS_READ_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// Where a write leaves the firmware haptic engine's enable flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HapticEngine {
+    /// The enable flag set: plays produce physical feedback.
+    On,
+    /// The enable flag cleared: plays are accepted but silent.
+    Off,
+}
+
+impl HapticEngine {
+    /// The engine state a config's `enabled` switch asks for.
+    pub(super) fn configured(enabled: bool) -> Self {
+        if enabled { Self::On } else { Self::Off }
+    }
+}
+
 /// The haptic feature on one device, the waveforms it advertises, and
 /// whether it reports that it can play.
 struct Haptics {
@@ -61,22 +77,7 @@ async fn open_haptics(
     channel: &Arc<HidppChannel>,
     device_index: u8,
 ) -> Result<Haptics, WriteError> {
-    let mut device = Device::new(Arc::clone(channel), device_index)
-        .await
-        .map_err(|_| WriteError::DeviceUnreachable {
-            index: device_index,
-        })?;
-    let info = device
-        .root()
-        .get_feature(HapticFeedbackFeature::ID)
-        .await
-        .map_err(|e| {
-            classify_hidpp_error(e, HidppOperation::ResolveFeature, HapticFeedbackFeature::ID)
-        })?
-        .ok_or(WriteError::FeatureUnsupported {
-            feature_hex: HapticFeedbackFeature::ID,
-        })?;
-    let feature = device.add_feature::<HapticFeedbackFeature>(info.index);
+    let (feature, feature_index) = resolve_haptics(channel, device_index).await?;
     let capabilities = feature.get_capabilities().await.map_err(|error| {
         classify_hidpp_error(error, HidppOperation::PlayHaptic, HapticFeedbackFeature::ID)
     })?;
@@ -97,10 +98,36 @@ async fn open_haptics(
     };
     Ok(Haptics {
         feature,
-        feature_index: info.index,
+        feature_index,
         waveforms: capabilities.waveforms,
         status,
     })
+}
+
+/// Resolve the haptic feature on `channel` and the index it was found at.
+async fn resolve_haptics(
+    channel: &Arc<HidppChannel>,
+    device_index: u8,
+) -> Result<(Arc<HapticFeedbackFeature>, u8), WriteError> {
+    let mut device = Device::new(Arc::clone(channel), device_index)
+        .await
+        .map_err(|_| WriteError::DeviceUnreachable {
+            index: device_index,
+        })?;
+    let info = device
+        .root()
+        .get_feature(HapticFeedbackFeature::ID)
+        .await
+        .map_err(|e| {
+            classify_hidpp_error(e, HidppOperation::ResolveFeature, HapticFeedbackFeature::ID)
+        })?
+        .ok_or(WriteError::FeatureUnsupported {
+            feature_hex: HapticFeedbackFeature::ID,
+        })?;
+    Ok((
+        device.add_feature::<HapticFeedbackFeature>(info.index),
+        info.index,
+    ))
 }
 
 /// Refuse, before anything is sent, a waveform the device does not
@@ -158,6 +185,11 @@ struct FeatureLocation {
 }
 
 static CACHED_LOCATION: Mutex<Option<FeatureLocation>> = Mutex::new(None);
+
+/// Serializes the tests, here and in the presenter's, that touch the one
+/// process-wide cache slot.
+#[cfg(test)]
+pub(super) static CACHE_SLOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Rebuild the cached accessor for exactly `channel`, without I/O, with the
 /// waveforms and status the open read. `None` when nothing is cached, the
@@ -235,25 +267,62 @@ pub async fn ensure_haptics_armed_on(shared: &SharedChannel) -> Result<bool, Wri
     let index = shared.device_index();
     let haptics = open_haptics(channel, index).await?;
     store_cached_location(channel, index, &haptics);
-    let feature = haptics.feature;
-    let config = feature.get_configuration().await.map_err(|error| {
-        clear_cached_location();
-        classify_hidpp_error(error, HidppOperation::PlayHaptic, HapticFeedbackFeature::ID)
-    })?;
-    if config.flags.contains(HapticConfigFlags::ENABLED) || config.intensity.get() == 0 {
+    write_haptic_engine(
+        &haptics.feature,
+        HapticEngine::On,
+        HidppOperation::PlayHaptic,
+    )
+    .await
+    .inspect_err(|_| clear_cached_location())
+}
+
+/// Switch a presenter's firmware haptic engine to `engine`, keeping the
+/// user's intensity, power save and unnamed bits as read. Returns `true`
+/// when a write was needed. Nothing here touches the ring's one-slot location
+/// cache: a presenter is not the pointing device whose plays that slot
+/// serves, so neither its connect nor its errors may overwrite or clear it.
+/// Enabling follows [`ensure_haptics_armed_on`]'s policy, including leaving a
+/// zero intensity alone; disabling clears the enable flag and counts only
+/// once the device's reply shows it cleared.
+pub(super) async fn set_haptic_engine(
+    channel: &Arc<HidppChannel>,
+    index: u8,
+    engine: HapticEngine,
+) -> Result<bool, WriteError> {
+    let (feature, _) = resolve_haptics(channel, index).await?;
+    write_haptic_engine(&feature, engine, HidppOperation::ConfigurePresenter).await
+}
+
+/// The read, difference check, write and reply check both entries share:
+/// set the enable flag as `engine` asks, writing only when it differs.
+/// Failures carry `operation`: the ring labels them as a play, a presenter
+/// as its configuration.
+async fn write_haptic_engine(
+    feature: &HapticFeedbackFeature,
+    engine: HapticEngine,
+    operation: HidppOperation,
+) -> Result<bool, WriteError> {
+    let enabled = engine == HapticEngine::On;
+    let config = feature
+        .get_configuration()
+        .await
+        .map_err(|error| classify_hidpp_error(error, operation, HapticFeedbackFeature::ID))?;
+    let is_enabled = config.flags.contains(HapticConfigFlags::ENABLED);
+    if is_enabled == enabled || (enabled && config.intensity.get() == 0) {
         return Ok(false);
     }
+    let flags = if enabled {
+        config.flags | HapticConfigFlags::ENABLED
+    } else {
+        config.flags - HapticConfigFlags::ENABLED
+    };
     let applied = feature
-        .set_configuration(config.flags | HapticConfigFlags::ENABLED, config.intensity)
+        .set_configuration(flags, config.intensity)
         .await
-        .map_err(|error| {
-            clear_cached_location();
-            classify_hidpp_error(error, HidppOperation::PlayHaptic, HapticFeedbackFeature::ID)
-        })?;
-    if !applied.flags.contains(HapticConfigFlags::ENABLED) {
-        clear_cached_location();
+        .map_err(|error| classify_hidpp_error(error, operation, HapticFeedbackFeature::ID))?;
+    if applied.flags.contains(HapticConfigFlags::ENABLED) != enabled {
         return Err(WriteError::UnsupportedResponse {
-            operation: HidppOperation::PlayHaptic,
+            operation,
             feature_hex: HapticFeedbackFeature::ID,
         });
     }
@@ -321,9 +390,6 @@ mod tests {
 
     use super::*;
     use crate::channel::scripted::{ScriptedRawHidChannel, scripted_channel};
-
-    /// Serializes the tests that touch the one process-wide cache slot.
-    static CACHE_SLOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     const HAPTIC_INDEX: u8 = 0x0b;
     /// What an MX Master 4 needs for the Actions Ring: both ring waveforms.
@@ -520,6 +586,73 @@ mod tests {
             cached,
             "a confirmed repair keeps the location for the plays"
         );
+    }
+
+    #[tokio::test]
+    async fn presenter_haptics_toggle_the_enable_bit_and_keep_the_rest() {
+        let _slot = CACHE_SLOT.lock().await;
+        let (raw, handle) = stateful_haptics([0x83, 60, 0x34], |_| {}, RING_WAVEFORMS);
+        let shared = shared_channel(raw).await;
+        let set = |engine| set_haptic_engine(shared.channel(), shared.device_index(), engine);
+        assert_matches!(set(HapticEngine::Off).await, Ok(true));
+        assert_matches!(
+            set(HapticEngine::Off).await,
+            Ok(false),
+            "already off is not rewritten"
+        );
+        assert_matches!(set(HapticEngine::On).await, Ok(true));
+        let writes: Vec<_> = handle
+            .written_reports()
+            .into_iter()
+            .filter(|report| report[2] == HAPTIC_INDEX && report[3] >> 4 == 0x02)
+            .map(|report| [report[4], report[5]])
+            .collect();
+        assert_eq!(writes, vec![[0x82, 60], [0x83, 60]]);
+    }
+
+    #[tokio::test]
+    async fn presenter_haptics_fail_when_the_reply_still_shows_the_old_state() {
+        let _slot = CACHE_SLOT.lock().await;
+        // The firmware keeps the engine enabled whatever is written.
+        let (raw, _handle) =
+            stateful_haptics([0x83, 60, 0x34], |state| state[0] |= 0x01, RING_WAVEFORMS);
+        let shared = shared_channel(raw).await;
+        assert_matches!(
+            set_haptic_engine(shared.channel(), shared.device_index(), HapticEngine::Off).await,
+            Err(WriteError::UnsupportedResponse {
+                operation: HidppOperation::ConfigurePresenter,
+                feature_hex: HapticFeedbackFeature::ID,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn presenter_haptics_never_touch_the_rings_location_cache() {
+        let _slot = CACHE_SLOT.lock().await;
+        clear_cached_location();
+        let (raw, _handle) = stateful_haptics([0x03, 40, 0x34], |_| {}, RING_WAVEFORMS);
+        let ring = shared_channel(raw).await;
+        assert_matches!(ensure_haptics_armed_on(&ring).await, Ok(false));
+        assert!(cached_feature(ring.channel(), ring.device_index()).is_some());
+
+        for firmware in [(|_: &mut [u8; 3]| {}) as fn(&mut [u8; 3]), |state| {
+            state[0] |= 0x01;
+        }] {
+            let (raw, _handle) = stateful_haptics([0x03, 60, 0x34], firmware, RING_WAVEFORMS);
+            let presenter = shared_channel(raw).await;
+            let _ = set_haptic_engine(
+                presenter.channel(),
+                presenter.device_index(),
+                HapticEngine::Off,
+            )
+            .await;
+            assert!(
+                cached_feature(ring.channel(), ring.device_index()).is_some(),
+                "a presenter's connect or error must not replace or clear the ring's entry"
+            );
+            assert!(cached_feature(presenter.channel(), presenter.device_index()).is_none());
+        }
+        clear_cached_location();
     }
 
     /// Holds [`CACHE_SLOT`]: every check below reads the shared cache slot.

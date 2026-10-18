@@ -11,6 +11,7 @@ use hidpp::{
         battery_voltage::BatteryVoltageFeature,
         device_information::{DeviceInformationFeature, DeviceTransport},
         device_type_and_name::DeviceTypeAndNameFeature,
+        force_sensing_button::ForceSensingButtonFeature,
         gestures2::Gestures2Feature,
         multi_platform::{MultiPlatformCapabilities, MultiPlatformFeature},
         reprog_controls::{ReprogControlsFeature, control_ids},
@@ -437,6 +438,7 @@ async fn probe_extra_capabilities(
         let mut haptic_panel = false;
         let mut dpi_gestures = false;
         let mut virtual_thumbwheel = false;
+        let mut presenter_touch = false;
         for index in 0..count {
             let info = feature.get_cid_info(index).await.map_err(|_| ())?;
             haptic_panel |= probe_haptic_controls
@@ -450,12 +452,19 @@ async fn probe_extra_capabilities(
                 || FORWARD_CIDS.contains(&info.cid.0))
                 && info.flags.is_divertable()
                 && info.flags.supports_raw_wheel();
+            // The presenter's top button at its first force level.
+            presenter_touch |= info.cid == control_ids::CURSOR_BUTTON_LONG_PRESS
+                && info.flags.is_divertable()
+                && info.flags.supports_raw_xy();
         }
         // Publish only a complete control walk. A lost reply must retain the
         // cache's last-good capabilities and schedule repair, not hide support.
         caps.haptic_panel = haptic_panel;
         caps.dpi_gestures = dpi_gestures;
         caps.virtual_thumbwheel = virtual_thumbwheel;
+        // `0x19c0` alone is not a presenter: the MX Master 4 has it too.
+        caps.presenter_highlight =
+            presenter_touch && device.get_feature::<ForceSensingButtonFeature>().is_some();
     }
     Ok(())
 }
@@ -557,11 +566,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn presenter_highlight_needs_the_force_button_and_its_touch_control() {
+        // Spotlight 2: touch, firm press and click controls, both raw-XY ones
+        // divertable.
+        let spotlight = vec![(0x0050, 0x0020), (0x00d8, 0x0120), (0x01a8, 0x0120)];
+        // MX Master 4: the same `0x19c0`, but the thumb panel and no `0x00d8`.
+        let mx_master_4 = vec![(0x0050, 0x0020), (0x00c3, 0x0120), (0x01a0, 0x0120)];
+        for (features, controls, expected) in [
+            (vec![0x0001, 0x1b04, 0x19c0], spotlight.clone(), true),
+            (vec![0x0001, 0x1b04, 0x19c0], mx_master_4, false),
+            // The control without the force button configures nothing.
+            (vec![0x0001, 0x1b04], spotlight.clone(), false),
+            // A touch control that cannot divert or report raw XY is no highlight source.
+            (
+                vec![0x0001, 0x1b04, 0x19c0],
+                vec![(0x00d8, 0x0100), (0x01a8, 0x0120)],
+                false,
+            ),
+            (
+                vec![0x0001, 0x1b04, 0x19c0],
+                vec![(0x00d8, 0x0020), (0x01a8, 0x0120)],
+                false,
+            ),
+        ] {
+            let probe = control_probe(features.clone(), controls.clone(), None).await;
+            let caps = probe.capabilities.unwrap();
+            assert!(!probe.capabilities_incomplete);
+            assert_eq!(
+                caps.presenter_highlight, expected,
+                "features {features:04x?}, controls {controls:04x?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn control_walk_publishes_its_capabilities_only_after_all_rows_succeed() {
-        for fail_at in [Some(0), Some(1), Some(2), None] {
+        for fail_at in [Some(0), Some(1), Some(2), Some(3), None] {
             let probe = control_probe(
-                vec![0x0001, 0x1b04, 0x19b0],
-                vec![(0x01a0, 0x0020), (0x00ed, 0x0120), (0x0056, 0x0820)],
+                vec![0x0001, 0x1b04, 0x19b0, 0x19c0],
+                vec![
+                    (0x01a0, 0x0020),
+                    (0x00d8, 0x0120),
+                    (0x00ed, 0x0120),
+                    (0x0056, 0x0820),
+                ],
                 fail_at,
             )
             .await;
@@ -570,6 +618,7 @@ mod tests {
             assert_eq!(caps.haptic_panel, fail_at.is_none());
             assert_eq!(caps.dpi_gestures, fail_at.is_none());
             assert_eq!(caps.virtual_thumbwheel, fail_at.is_none());
+            assert_eq!(caps.presenter_highlight, fail_at.is_none());
         }
     }
 

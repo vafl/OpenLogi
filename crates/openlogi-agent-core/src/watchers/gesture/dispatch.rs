@@ -243,6 +243,9 @@ impl InputDispatcher {
                     openlogi_inject::natural_scrolling(),
                 ),
             ),
+            // Only a diverted presenter source reports motion, and no plan
+            // diverts one yet.
+            CapturedInput::Motion { .. } => {}
             CapturedInput::ThumbwheelDirection { .. } => {
                 unreachable!("thumb-wheel direction reports return before dispatch")
             }

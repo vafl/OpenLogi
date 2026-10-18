@@ -2,9 +2,10 @@
 //! control-id list (`x1b04_control_ids_list`).
 //!
 //! Covers control IDs `0xB8`..=`0x161`; the classic mouse and keyboard control
-//! IDs below `0xB8` are not enumerated in that list. Newer controls observed on
-//! shipping hardware are listed after the official range and identified as
-//! reverse-engineered.
+//! IDs below `0xB8` are not enumerated in that list, except the left button
+//! (`0x50`), which is listed with the reverse-engineered controls. Newer
+//! controls observed on shipping hardware are listed after the official range
+//! and identified as reverse-engineered.
 
 use super::ControlId;
 
@@ -523,3 +524,18 @@ pub const STANDARD_SPACE: ControlId = ControlId(0x161);
 /// This value is not present in the published `x1b04_control_ids_list`; it is
 /// cross-checked against the MX Master 4 control table and device metadata.
 pub const HAPTIC_PANEL: ControlId = ControlId(0x1A0);
+
+/// `Left Button` (`0x50`), the classic left mouse button.
+///
+/// Below the published `x1b04_control_ids_list` range; the value comes from
+/// Logitech's control table (`LEFT_BUTTON`) and is cross-checked on a Spotlight
+/// 2, where it is the click that the force-sensing button emits natively.
+pub const LEFT_BUTTON: ControlId = ControlId(0x50);
+
+/// `Cursor Button Firm Press` (`0x1A8`), the second force level of the
+/// Spotlight 2's force-sensing button.
+///
+/// Reverse-engineered: this value is not present in the published
+/// `x1b04_control_ids_list`; it is cross-checked against the device's control
+/// table, where it carries task `SW_CUSTOM_HIGHLIGHT_2`.
+pub const CURSOR_BUTTON_FIRM_PRESS: ControlId = ControlId(0x1A8);

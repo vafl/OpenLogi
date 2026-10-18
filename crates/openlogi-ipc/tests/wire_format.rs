@@ -33,7 +33,7 @@ use std::fmt::Write;
 
 use bincode::Options;
 use openlogi_core::app::ForegroundApp;
-use openlogi_core::binding::{ActionRingIcon, ActionRingSlot, KeyCombo};
+use openlogi_core::binding::{ActionRingIcon, ActionRingSlot, ButtonId, KeyCombo};
 use openlogi_core::config::{ConfigRevision, Lighting, ScrollResolution};
 use openlogi_core::device::{
     BatteryInfo, BatteryLevel, BatteryStatus, Capabilities, ChangedOnLight, DeviceInventory,
@@ -420,6 +420,21 @@ fn action_ring_types() {
 }
 
 #[test]
+fn highlight_types() {
+    // `ButtonId` crosses the wire as its persisted name.
+    assert_wire(&ButtonId::PresenterTouch, "0e50726573656e746572546f756368");
+    assert_wire(&ButtonId::PresenterPress, "0e50726573656e7465725072657373");
+    assert_wire(&ButtonId::PresenterClick, "0e50726573656e746572436c69636b");
+    assert_wire(
+        &Capabilities {
+            presenter_highlight: true,
+            ..Capabilities::default()
+        },
+        "00000000000000000000000000000001",
+    );
+}
+
+#[test]
 fn monitor_events() {
     assert_wire(
         &MonitorEvent::Button {
@@ -593,13 +608,14 @@ fn device_inventory() {
                 backlight: true,
                 easy_switch: true,
                 virtual_thumbwheel: true,
+                presenter_highlight: false,
             }),
             settings_revision: 7,
         }],
     }];
     assert_wire(
         &inventory,
-        "010d426f6c74205265636569766572fb6d04fb48c501084630304443414645010101094d58204d535452335301fb34b00001010150020001030106323134304c5a0102030400010100fb34b0fb8240000b0101010000010101010100010101010107",
+        "010d426f6c74205265636569766572fb6d04fb48c501084630304443414645010101094d58204d535452335301fb34b00001010150020001030106323134304c5a0102030400010100fb34b0fb8240000b010101000001010101010001010101010007",
     );
 }
 
@@ -911,6 +927,7 @@ fn easy_switch_hosts_and_errors() {
     );
     assert_wire(&HidppOperation::ReadHosts, "15");
     assert_wire(&HidppOperation::RenameHost, "16");
+    assert_wire(&HidppOperation::ConfigurePresenter, "17");
     assert_wire(&WriteError::HostRenameUnsupported, "16");
     assert_wire(&WriteError::HostSlotEmpty { slot: 2 }, "1702");
     assert_wire(&WriteError::HostNameRejected { max_len: 24 }, "1818");
@@ -920,6 +937,22 @@ fn easy_switch_hosts_and_errors() {
             actual: Some("Old".into()),
         },
         "19044465736b01034f6c64",
+    );
+    assert_wire(
+        &WriteError::ForceLevelModeNotApplied {
+            requested: 3,
+            actual: 1,
+        },
+        "1a0301",
+    );
+    assert_wire(
+        &WriteError::ForceThresholdsNotApplied {
+            requested_touch: 93,
+            requested_press: 300,
+            actual_touch: 140,
+            actual_press: 350,
+        },
+        "1b5dfb2c018cfb5e01",
     );
 }
 
