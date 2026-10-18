@@ -38,7 +38,8 @@ use tracing::{debug, info, warn};
 
 use crate::action_ring::ActionRingSessionSpec;
 use crate::capture_plan::{
-    CapturePublication, SharedCapturePlans, hidpp_side_gesture_maps_for, plan_for_device,
+    CapturePublication, PlanContext, SharedCapturePlans, hidpp_side_gesture_maps_for,
+    plan_for_device,
 };
 use crate::hardware::{
     DeviceAccess, DeviceOp, HardwareContext, KeptOsLayouts, VolatileMouseSettings, WriteOrder,
@@ -792,9 +793,11 @@ impl Orchestrator {
                 physical_key,
                 &dev.config_key,
                 route,
-                app,
-                rearm_generation,
-                self.os_mouse_hook_available,
+                PlanContext {
+                    app,
+                    rearm_generation,
+                    os_mouse_hook_available: self.os_mouse_hook_available,
+                },
             );
             plan.dispatch.pointer_target = pointer_target;
             plan.dispatch.invert_wheel = wheel_inverted(&self.config, dev);

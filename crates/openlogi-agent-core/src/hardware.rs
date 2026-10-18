@@ -1599,9 +1599,10 @@ mod tests {
                 .expect("fixture is a physical key"),
             "mouse",
             route.clone(),
-            None,
-            0,
-            true,
+            crate::capture_plan::PlanContext {
+                os_mouse_hook_available: true,
+                ..Default::default()
+            },
         );
         plan.target.spec.divert_main_wheel =
             divert.then(openlogi_hid::session::gesture::MainWheelDivert::default);

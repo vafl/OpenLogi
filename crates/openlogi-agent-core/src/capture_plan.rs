@@ -206,17 +206,30 @@ pub(crate) fn hidpp_side_gesture_maps_for(
         .collect()
 }
 
-/// Build one device's plan from the config (per-app effective for `app`).
+/// What one device's plan is resolved against beyond its config and identity.
+/// The default is the plain case: no foreground app, generation 0, no OS mouse
+/// hook.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlanContext<'a> {
+    /// Foreground app whose per-app bindings apply.
+    pub app: Option<&'a str>,
+    /// Orchestrator rearm generation stamped on the capture target.
+    pub rearm_generation: u64,
+    /// Whether the OS mouse hook can deliver the pointer controls it owns.
+    pub os_mouse_hook_available: bool,
+}
+
+/// Build one device's plan from the config (per-app effective for
+/// `context.app`).
 #[must_use]
 pub fn plan_for_device(
     config: &Config,
     physical_key: PhysicalDeviceKey,
     config_key: &str,
     route: DeviceRoute,
-    app: Option<&str>,
-    rearm_generation: u64,
-    os_mouse_hook_available: bool,
+    context: PlanContext<'_>,
 ) -> DeviceCapturePlan {
+    let app = context.app;
     let bindings = button_bindings_for(config, Some(config_key), app);
     // Gesture-mode OS-hook controls normally stay native so the hook sees the
     // press. Back/Forward may additionally request device-owned HID++ raw XY:
@@ -228,7 +241,7 @@ pub fn plan_for_device(
     // target below derives the CIDs to divert from this map's keys).
     let gesture_bindings = hidpp_gesture_maps_for(config, Some(config_key), app);
     let mut divert_gesture_buttons = Vec::new();
-    if os_mouse_hook_available {
+    if context.os_mouse_hook_available {
         divert_gesture_buttons.extend(
             DIVERTABLE_STANDARD_BUTTONS
                 .into_iter()
@@ -248,7 +261,7 @@ pub fn plan_for_device(
     // like a long press instead: the click still runs, and the wheel stays
     // native. Arming then diverts raw wheel only where a control offers it.
     let divert_wheel_buttons: Vec<(u16, ButtonId)> =
-        if os_mouse_hook_available && config.app_settings.capture_mouse_events {
+        if context.os_mouse_hook_available && config.app_settings.capture_mouse_events {
             DIVERTABLE_STANDARD_BUTTONS
                 .into_iter()
                 .filter(|(_, button)| button.supports_wheel_hold())
@@ -328,7 +341,7 @@ pub fn plan_for_device(
                 // its current link, so the orchestrator fills it in.
                 divert_main_wheel: None,
             },
-            rearm_generation,
+            rearm_generation: context.rearm_generation,
         },
         dispatch: DispatchPlan {
             config_key: config_key.to_owned(),
@@ -394,9 +407,11 @@ mod tests {
                 .expect("fixture should be a physical key"),
             config_key,
             route,
-            app,
-            rearm_generation,
-            os_mouse_hook_available,
+            PlanContext {
+                app,
+                rearm_generation,
+                os_mouse_hook_available,
+            },
         )
     }
 
