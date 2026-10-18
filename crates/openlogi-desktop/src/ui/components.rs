@@ -5,9 +5,9 @@
 //! builders.
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, Entity, InteractiveElement, Interactivity, IntoElement,
-    ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement,
-    Styled, Window, div, prelude::FluentBuilder as _, px, rgb,
+    AnyElement, App, ClickEvent, Div, ElementId, Entity, InteractiveElement, Interactivity,
+    IntoElement, ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Toggled, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::{
@@ -21,6 +21,8 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
+
+use openlogi_core::color::Rgb;
 
 use super::theme::{self, ACCENT_BLUE, SelectableStyle as _, Typography as _};
 
@@ -207,16 +209,16 @@ impl RenderOnce for Toggle {
     }
 }
 
-/// One setting: a title and a caption on the left, its toggle on the right.
-/// The caption column shrinks and wraps, so a long translation cannot push the
-/// toggle out of its card or panel. `selector` names the row for layout tests,
-/// and `{selector}-control` the toggle's slot.
-pub(crate) fn toggle_row(
+/// One setting: a title and a caption on the left, its control (a toggle, a
+/// picker, ...) on the right. The caption column shrinks and wraps, so a long
+/// translation cannot push the control out of its card or panel. `selector`
+/// names the row for layout tests, and `{selector}-control` the control's slot.
+pub(crate) fn setting_row(
     selector: &'static str,
     pal: theme::Palette,
     title: SharedString,
     description: SharedString,
-    toggle: Toggle,
+    control: impl IntoElement,
 ) -> impl IntoElement {
     h_flex()
         .debug_selector(move || selector.into())
@@ -239,8 +241,65 @@ pub(crate) fn toggle_row(
             div()
                 .debug_selector(move || format!("{selector}-control"))
                 .flex_shrink_0()
-                .child(toggle),
+                .child(control),
         )
+}
+
+/// A slider's header and track: a label on the left and its live value on the
+/// right, baseline-aligned, with the `slider` below. The caller styles the
+/// label and the value, so a disabled row can mute them.
+pub(crate) fn slider_row(
+    label: impl IntoElement,
+    value: impl IntoElement,
+    slider: impl IntoElement,
+) -> Div {
+    v_flex()
+        .gap_2()
+        .child(
+            h_flex()
+                .justify_between()
+                .items_baseline()
+                .child(label)
+                .child(value),
+        )
+        .child(slider)
+}
+
+const SWATCH: f32 = 28.;
+
+/// One colour swatch of a preset palette, a radio button in its group. `group`
+/// names the palette for assistive technology; the swatch's own colour is
+/// appended to it.
+pub(crate) fn color_swatch<I: Into<ElementId>, F: Fn(&mut App) + 'static>(
+    id: I,
+    group: &str,
+    color: Rgb,
+    selected: bool,
+    pal: theme::Palette,
+    on_click: F,
+) -> impl IntoElement + use<I, F> {
+    BaseButton::new(id)
+        .role(Role::RadioButton)
+        .selected(selected)
+        .accessibility_label(format!("{group} #{:06X}", color.packed()))
+        .aria_toggled(if selected {
+            Toggled::True
+        } else {
+            Toggled::False
+        })
+        .aria_selected(selected)
+        .size(px(SWATCH))
+        .rounded(pal.control_radius)
+        .border_2()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            pal.border
+        })
+        .bg(rgb(color.packed()))
+        .cursor_pointer()
+        .focus_visible(|style| style.border_color(theme::accent()))
+        .on_click(move |_event, _window, cx| on_click(cx))
 }
 
 /// A titled card used by device-detail panels.

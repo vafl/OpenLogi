@@ -36,7 +36,7 @@ use crate::features::profiles::{
 };
 use crate::state::{AppState, DeviceRecord, StateEvents};
 use crate::ui::battery::BatteryIndicator;
-use crate::ui::components::{PanelCard, Toggle, toggle_row};
+use crate::ui::components::{PanelCard, Toggle, setting_row};
 use crate::ui::theme::{
     self, ContentWidth, DETAIL_RAIL_W, HEADER_H, Palette, SCREEN_PAD, Typography as _,
 };
@@ -506,7 +506,7 @@ fn scrolling_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
 /// on another link can always be turned off from here.
 fn smooth_wheel_row(pal: Palette, smooth_wheel: bool, hires: HiresWheel) -> impl IntoElement {
     let available = hires == HiresWheel::Here || smooth_wheel;
-    toggle_row(
+    setting_row(
         "smooth-wheel-row",
         pal,
         tr!("pointer.smooth_wheel"),
@@ -732,7 +732,7 @@ fn keyboard_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
     } else {
         tr!("device.fn_lock_unsupported")
     };
-    let fn_lock_row = toggle_row(
+    let fn_lock_row = setting_row(
         "fn-lock-row",
         pal,
         tr!("device.fn_lock"),
@@ -750,7 +750,7 @@ fn keyboard_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
     } else {
         tr!("device.keep_os_layout_unsupported")
     };
-    let os_layout_row = toggle_row(
+    let os_layout_row = setting_row(
         "keep-os-layout-row",
         pal,
         tr!("device.keep_os_layout"),
