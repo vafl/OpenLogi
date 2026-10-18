@@ -1,21 +1,24 @@
 //! Debug-only gallery for reviewing shared controls without app runtime state.
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Render,
-    Role, SharedString, Size, StatefulInteractiveElement as _, Styled, Window, WindowBounds,
-    WindowOptions, div, px, rems,
+    App, AppContext as _, Bounds, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, Role, SharedString, Size, StatefulInteractiveElement as _, Styled, Window,
+    WindowBounds, WindowOptions, div, px, rems, rgb,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable as _, Sizable as _, Theme,
-    ThemeMode, ThemeRegistry,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Root, Selectable as _,
+    Sizable as _, Theme, ThemeMode, ThemeRegistry,
     button::{Button, ButtonVariants as _},
     h_flex,
+    input::InputState,
     scroll::ScrollableElement as _,
+    select::{SelectItem, SelectState},
     slider::Slider,
     v_flex,
 };
 use openlogi_core::brand::APP_ID;
+use openlogi_core::color::Rgb;
 use openlogi_core::config::UiScale;
 use openlogi_core::device::{BatteryInfo, BatteryLevel, BatteryStatus};
 
@@ -23,7 +26,11 @@ use super::battery::BatteryIndicator;
 use super::carousel::Carousel;
 use super::choice_card::ChoiceCard;
 use super::commit_slider::{CommitSlider, SliderRange};
-use super::components::{MenuRow, PanelCard, PresetChip, ProfileTab, Toggle, toggle_row};
+use super::components::{
+    MenuRow, PanelCard, PresetChip, ProfileTab, SELECT_W, Toggle, color_input, color_swatch,
+    control_select, setting_row, slider_row,
+};
+use super::section::section_label;
 use super::theme::{self, ContentWidth, OPENLOGI_DARK, OPENLOGI_LIGHT, Palette, Typography as _};
 
 const TITLE: &str = "OpenLogi Component Gallery";
@@ -53,7 +60,7 @@ pub(crate) fn run() {
         };
         let opened = cx.open_window(options, |window, cx| {
             theme::apply_scale(window, UiScale::Normal);
-            let view = cx.new(ComponentGallery::new);
+            let view = cx.new(|cx| ComponentGallery::new(window, cx));
             cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
         });
 
@@ -97,12 +104,31 @@ struct ComponentGallery {
     profile_selected: usize,
     preset_selected: bool,
     carousel_selected: usize,
+    swatch_selected: usize,
     slider: CommitSlider<u8>,
     slider_committed: u8,
+    picker: Entity<SelectState<Vec<GalleryChoice>>>,
+    color_hex: Entity<InputState>,
+}
+
+/// An option of the gallery's picker.
+#[derive(Clone, Copy, PartialEq)]
+struct GalleryChoice(&'static str);
+
+impl SelectItem for GalleryChoice {
+    type Value = Self;
+
+    fn title(&self) -> SharedString {
+        self.0.into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
 }
 
 impl ComponentGallery {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let slider_committed = 40;
         let slider = CommitSlider::new(
             SliderRange::new(0, 100),
@@ -119,8 +145,21 @@ impl ComponentGallery {
             profile_selected: 1,
             preset_selected: true,
             carousel_selected: 1,
+            swatch_selected: 0,
             slider,
             slider_committed,
+            picker: cx.new(|cx| {
+                SelectState::new(
+                    vec![
+                        GalleryChoice("First option"),
+                        GalleryChoice("Second option"),
+                    ],
+                    Some(IndexPath::default()),
+                    window,
+                    cx,
+                )
+            }),
+            color_hex: cx.new(|cx| InputState::new(window, cx).default_value("ff2a2a")),
         }
     }
 
@@ -197,9 +236,12 @@ impl ComponentGallery {
             .gap_4()
             .child(self.choice_panel(pal, cx))
             .child(self.toggle_panel(pal, cx))
+            .child(self.picker_panel(pal))
             .child(self.menu_panel(pal, cx))
             .child(self.profile_panel(pal, cx))
             .child(self.preset_panel(pal, cx))
+            .child(self.swatch_panel(pal, cx))
+            .child(self.color_input_panel(pal))
             .child(self.slider_panel(pal))
             .child(Self::battery_panel(pal))
     }
@@ -268,7 +310,7 @@ impl ComponentGallery {
                         .label(Some(SharedString::from("Unavailable")))
                         .disabled(true),
                 )
-                .child(toggle_row(
+                .child(setting_row(
                     "gallery-toggle-row",
                     pal,
                     SharedString::from("Setting"),
@@ -283,6 +325,39 @@ impl ComponentGallery {
                             cx.notify();
                         })),
                 )),
+            pal,
+        )
+    }
+
+    fn picker_panel(&self, pal: Palette) -> gpui::Div {
+        gallery_panel(
+            "SettingRow with a picker",
+            IconName::ChevronDown,
+            setting_row(
+                "gallery-picker-row",
+                pal,
+                SharedString::from("Setting"),
+                SharedString::from(
+                    "A picker in the control slot keeps its width beside a long caption.",
+                ),
+                control_select(&self.picker)
+                    .w(px(SELECT_W))
+                    .menu_width(px(SELECT_W)),
+            ),
+            pal,
+        )
+    }
+
+    fn color_input_panel(&self, pal: Palette) -> gpui::Div {
+        gallery_panel(
+            "Color input",
+            IconName::Palette,
+            color_input(
+                "gallery-color",
+                pal,
+                Rgb::new(0xff, 0x2a, 0x2a),
+                &self.color_hex,
+            ),
             pal,
         )
     }
@@ -376,13 +451,55 @@ impl ComponentGallery {
         )
     }
 
+    fn swatch_panel(&self, pal: Palette, cx: &mut Context<Self>) -> gpui::Div {
+        const COLORS: [Rgb; 5] = [
+            Rgb::new(0xff, 0x2a, 0x2a),
+            Rgb::new(0xff, 0x95, 0x00),
+            Rgb::new(0x00, 0xff, 0x40),
+            Rgb::new(0x00, 0xe5, 0xff),
+            Rgb::WHITE,
+        ];
+        let entity = cx.entity();
+        gallery_panel(
+            "ColorSwatch",
+            IconName::Palette,
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .children(COLORS.iter().enumerate().map(|(index, &color)| {
+                    let entity = entity.clone();
+                    color_swatch(
+                        ("gallery-swatch", color.packed()),
+                        "Gallery color",
+                        color,
+                        self.swatch_selected == index,
+                        pal,
+                        move |cx| {
+                            entity.update(cx, |this, cx| {
+                                this.swatch_selected = index;
+                                cx.notify();
+                            });
+                        },
+                    )
+                })),
+            pal,
+        )
+    }
+
     fn slider_panel(&self, pal: Palette) -> gpui::Div {
         gallery_panel(
             "CommitSlider",
             IconName::Sun,
             v_flex()
                 .gap_2()
-                .child(Slider::new(self.slider.slider()).horizontal())
+                .child(slider_row(
+                    section_label("Setting", pal),
+                    div()
+                        .text_body()
+                        .text_color(rgb(theme::ACCENT_BLUE))
+                        .child(format!("{}", self.slider.shown(self.slider_committed))),
+                    Slider::new(self.slider.slider()).horizontal(),
+                ))
                 .child(
                     div()
                         .text_caption()
@@ -570,7 +687,7 @@ mod tests {
         cx.update(gpui_component::init);
         cx.update(theme::register_builtin_themes);
         cx.update(install_openlogi_themes);
-        let (view, cx) = cx.add_window_view(|_, cx| ComponentGallery::new(cx));
+        let (view, cx) = cx.add_window_view(ComponentGallery::new);
 
         cx.update(|window, cx| window.draw(cx).clear(cx));
         view.update(cx, |gallery, cx| {

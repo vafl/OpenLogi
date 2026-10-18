@@ -34,6 +34,7 @@ pub(crate) use load::Load;
 pub use load::{
     BacklightLoad, DpiLoad, EasySwitchLoad, FnLockLoad, ReportRateLoad, SmartShiftLoad,
 };
+pub(crate) use presenter::PresenterBindings;
 
 /// Result of confirming a SmartShift write by reading the value back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,7 @@ mod lighting;
 mod load;
 mod os_layout;
 mod pointer;
+mod presenter;
 mod report_rate;
 mod scroll;
 mod settings;

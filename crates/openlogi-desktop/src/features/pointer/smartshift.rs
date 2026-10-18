@@ -12,7 +12,6 @@
 //! the current value through the agent when selection/inventory lifecycle
 //! events make a device active; this view only consumes the resulting cache.
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Context, IntoElement, ParentElement, Render, SharedString, Styled,
     Subscription, Window, div, px, rgb,
@@ -32,7 +31,7 @@ use crate::state::{
     StateEvents,
 };
 use crate::ui::commit_slider::{CommitSlider, SliderRange};
-use crate::ui::components::Toggle;
+use crate::ui::components::{Toggle, slider_row};
 use crate::ui::section::section_label;
 use crate::ui::status::{retry_line, status_line};
 use crate::ui::theme::{self, ACCENT_BLUE, Palette, Typography as _};
@@ -197,30 +196,26 @@ impl SmartShiftPanel {
         } else {
             pal.text_muted
         };
-        let sensitivity_row = v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_baseline()
-                    .child(section_label(tr!("pointer.sensitivity"), pal))
-                    .child(
-                        div()
-                            .text_body()
-                            .text_color(value_color)
-                            .child(format!("{display}")),
-                    ),
-            )
-            .when(sensitivity_enabled, |row| {
-                row.child(Slider::new(self.threshold.slider()).horizontal())
-            })
-            .when(!sensitivity_enabled, |row| row.child(disabled_track(pal)))
-            .child(
-                div()
-                    .text_caption()
-                    .text_color(pal.text_muted)
-                    .child(tr!("pointer.smartshift_sensitivity_description")),
-            );
+        let sensitivity_row = slider_row(
+            section_label(tr!("pointer.sensitivity"), pal),
+            div()
+                .text_body()
+                .text_color(value_color)
+                .child(format!("{display}")),
+            if sensitivity_enabled {
+                Slider::new(self.threshold.slider())
+                    .horizontal()
+                    .into_any_element()
+            } else {
+                disabled_track(pal).into_any_element()
+            },
+        )
+        .child(
+            div()
+                .text_caption()
+                .text_color(pal.text_muted)
+                .child(tr!("pointer.smartshift_sensitivity_description")),
+        );
 
         let torque_row = self.torque_row(status, ratchet, window, cx);
         let wheel_row = self.wheel_sensitivity_row(window, cx);
@@ -257,30 +252,26 @@ impl SmartShiftPanel {
             pal.text_muted
         };
         Some(
-            v_flex()
-                .gap_2()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .items_baseline()
-                        .child(section_label(tr!("pointer.scrolling_force"), pal))
-                        .child(
-                            div()
-                                .text_body()
-                                .text_color(torque_value_color)
-                                .child(format!("{display}%")),
-                        ),
-                )
-                .when(ratchet, |row| {
-                    row.child(Slider::new(self.torque.slider()).horizontal())
-                })
-                .when(!ratchet, |row| row.child(disabled_track(pal)))
-                .child(
-                    div()
-                        .text_caption()
-                        .text_color(pal.text_muted)
-                        .child(tr!("pointer.scrolling_force_description")),
-                ),
+            slider_row(
+                section_label(tr!("pointer.scrolling_force"), pal),
+                div()
+                    .text_body()
+                    .text_color(torque_value_color)
+                    .child(format!("{display}%")),
+                if ratchet {
+                    Slider::new(self.torque.slider())
+                        .horizontal()
+                        .into_any_element()
+                } else {
+                    disabled_track(pal).into_any_element()
+                },
+            )
+            .child(
+                div()
+                    .text_caption()
+                    .text_color(pal.text_muted)
+                    .child(tr!("pointer.scrolling_force_description")),
+            ),
         )
     }
 
@@ -298,21 +289,14 @@ impl SmartShiftPanel {
             .unwrap_or(ThumbwheelSensitivity::DEFAULT);
         self.wheel_sensitivity.sync(committed, window, cx);
         let display = self.wheel_sensitivity.shown(committed);
-        v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_baseline()
-                    .child(section_label(tr!("pointer.thumb_wheel_sensitivity"), pal))
-                    .child(
-                        div()
-                            .text_body()
-                            .text_color(rgb(ACCENT_BLUE))
-                            .child(format!("{display}")),
-                    ),
-            )
-            .child(Slider::new(self.wheel_sensitivity.slider()).horizontal())
+        slider_row(
+            section_label(tr!("pointer.thumb_wheel_sensitivity"), pal),
+            div()
+                .text_body()
+                .text_color(rgb(ACCENT_BLUE))
+                .child(format!("{display}")),
+            Slider::new(self.wheel_sensitivity.slider()).horizontal(),
+        )
     }
 }
 

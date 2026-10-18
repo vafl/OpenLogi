@@ -3,8 +3,8 @@ use super::{Capabilities, DetailTab, DeviceKind, DeviceRecord};
 use crate::services::assets::ResolvedAsset;
 use crate::ui::battery::{battery_charging_no_reading, battery_needs_attention};
 use openlogi_core::device::{
-    BatteryInfo, BatteryLevel, BatteryStatus, DeviceModelInfo, DeviceTransports, LightCapabilities,
-    LightValueRange, LightValueUnit,
+    BatteryInfo, BatteryLevel, BatteryStatus, DeviceModelInfo, DeviceTransports,
+    HIGHLIGHT_OVERLAY_SUPPORTED, LightCapabilities, LightValueRange, LightValueUnit,
 };
 use openlogi_core::hid::DeviceRoute;
 
@@ -1205,6 +1205,32 @@ fn lighting_only_device_shows_only_lighting() {
     });
     let tabs = DetailTab::tabs_for(&record(DeviceKind::Keyboard, caps));
     assert_eq!(tabs, vec![DetailTab::Lighting, DetailTab::Device]);
+}
+
+/// A force-sensing presenter leads with its Presenter tab, which is also the
+/// one a freshly opened device shows; `Buttons` stays a mouse-only tab. A host
+/// that cannot render the highlight offers no Presenter tab for it.
+#[test]
+fn presenter_tab_leads_for_a_presenter_highlight_device() {
+    let caps = Some(Capabilities {
+        buttons: true,
+        presenter_highlight: true,
+        ..Capabilities::default()
+    });
+    let presenter = record(DeviceKind::Presenter, caps);
+    if HIGHLIGHT_OVERLAY_SUPPORTED {
+        assert_eq!(
+            DetailTab::tabs_for(&presenter),
+            vec![DetailTab::Presenter, DetailTab::Device]
+        );
+        assert_eq!(DetailTab::default_for(&presenter), DetailTab::Presenter);
+    } else {
+        assert_eq!(DetailTab::tabs_for(&presenter), vec![DetailTab::Device]);
+        assert_eq!(DetailTab::default_for(&presenter), DetailTab::Device);
+    }
+    assert!(
+        !DetailTab::tabs_for(&record(DeviceKind::Presenter, None)).contains(&DetailTab::Presenter)
+    );
 }
 
 #[test]
