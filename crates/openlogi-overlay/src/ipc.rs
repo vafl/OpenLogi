@@ -16,10 +16,8 @@ use std::{
 
 use openlogi_core::action_ring::DISPLAY_LIFETIME;
 use openlogi_core::binding::ActionRingSlot;
-use openlogi_ipc::client::{self, ConnectError, Observer};
-use openlogi_ipc::{
-    ActionRingInvocation, AgentClient, BacklightObservation, ClientKind, RingObservation,
-};
+use openlogi_ipc::client::{self, ConnectError, Observer, Stamped};
+use openlogi_ipc::{ActionRingInvocation, AgentClient, BacklightObservation, ClientKind};
 use succession::Standing;
 use tarpc::context;
 use tokio::sync::mpsc;
@@ -85,35 +83,6 @@ pub(crate) fn spawn() -> Handle {
     }
 }
 
-async fn observe_backlights(tx: mpsc::UnboundedSender<BacklightObservation>) {
-    loop {
-        let Some(client) = connect().await else {
-            tokio::time::sleep(RETRY_PERIOD).await;
-            continue;
-        };
-        let mut observer = Observer::backlight(client);
-        loop {
-            match observer.next().await {
-                Ok(Some(observation)) => {
-                    if tx.send(observation).is_err() {
-                        return;
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    debug!(?error, "backlight observation channel disconnected");
-                    // The expiry timer lives in the agent, so a lost agent can
-                    // never send the hide that closes a visible indicator.
-                    if tx.send(agent_lost()).is_err() {
-                        return;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-}
-
 /// The observation that closes the indicator when the agent that was driving
 /// it is gone. The generation is meaningless to the window, which only reads
 /// `visible`.
@@ -176,18 +145,18 @@ const GIVE_UP_AFTER: Duration = Duration::from_mins(1);
 /// How long to wait between attempts to reach an agent.
 const RETRY_PERIOD: Duration = Duration::from_secs(1);
 
-/// The connection that carries invocations: its phase, and the state
-/// meaningful within each phase.
+/// One observe connection: its phase, and the state meaningful within each
+/// phase.
 ///
 /// A successful connection owns its [`Observer`], and with it the generation
 /// cursor; a reconnect episode owns its give-up clock. Transitioning between
 /// them resets the fact from the previous phase by construction.
-enum InvocationLink {
+enum ObserveLink<T: Stamped> {
     Reconnecting { unreachable_since: Option<Instant> },
-    Observing(Observer<RingObservation>),
+    Observing(Observer<T>),
 }
 
-impl Default for InvocationLink {
+impl<T: Stamped> Default for ObserveLink<T> {
     fn default() -> Self {
         Self::Reconnecting {
             unreachable_since: None,
@@ -195,9 +164,9 @@ impl Default for InvocationLink {
     }
 }
 
-impl InvocationLink {
-    fn connected(&mut self, client: AgentClient) {
-        *self = Self::Observing(Observer::action_ring(client));
+impl<T: Stamped> ObserveLink<T> {
+    fn connected(&mut self, observer: Observer<T>) {
+        *self = Self::Observing(observer);
     }
 
     fn connect_failed(&mut self, now: Instant) -> bool {
@@ -215,16 +184,35 @@ impl InvocationLink {
     }
 }
 
-async fn observe_invocations(tx: mpsc::UnboundedSender<Option<ActionRingInvocation>>) {
-    let mut link = InvocationLink::default();
+/// What an observe loop hands its consumer.
+enum Observed<T> {
+    /// A fresh answer from the agent.
+    Answer(T),
+    /// An established connection dropped. The agent's own timers die with
+    /// it, so a consumer holding something only the agent can end must let
+    /// go of it.
+    Lost,
+}
+
+/// Keep one observe connection alive, handing every answer and every lost
+/// connection to `deliver`, which returns `false` once nobody listens any
+/// more.
+///
+/// All observe loops share this, so they share the connect, stand-down and
+/// give-up policy.
+async fn observe<T: Stamped>(
+    arm: fn(AgentClient) -> Observer<T>,
+    mut deliver: impl FnMut(Observed<T>) -> bool,
+) {
+    let mut link = ObserveLink::<T>::default();
     loop {
-        if matches!(&link, InvocationLink::Reconnecting { .. }) {
+        if matches!(&link, ObserveLink::Reconnecting { .. }) {
             if let Some(client) = connect().await {
                 // Generation 0 says "I have seen nothing", so the first
                 // answer is whatever is showing right now. A replacement
                 // agent numbers its own generations, so every connection
                 // starts there independently.
-                link.connected(client);
+                link.connected(arm(client));
             } else {
                 if link.connect_failed(Instant::now()) {
                     stand_down(&format!("no agent has answered for {GIVE_UP_AFTER:?}"));
@@ -233,24 +221,49 @@ async fn observe_invocations(tx: mpsc::UnboundedSender<Option<ActionRingInvocati
                 continue;
             }
         }
-        let InvocationLink::Observing(observer) = &mut link else {
+        let ObserveLink::Observing(observer) = &mut link else {
             continue;
         };
         match observer.next().await {
             // The hold elapsing with nothing new, or a stale reply: still
             // alive, nothing to show.
             Ok(None) => {}
-            Ok(Some(ring)) => {
-                if tx.send(ring.invocation).is_err() {
+            Ok(Some(answer)) => {
+                if !deliver(Observed::Answer(answer)) {
                     return;
                 }
             }
             Err(error) => {
-                debug!(?error, "Actions Ring state channel disconnected");
+                debug!(?error, "observe channel disconnected");
                 link.disconnected();
+                if !deliver(Observed::Lost) {
+                    return;
+                }
             }
         }
     }
+}
+
+async fn observe_invocations(tx: mpsc::UnboundedSender<Option<ActionRingInvocation>>) {
+    observe(Observer::action_ring, |observed| match observed {
+        Observed::Answer(ring) => tx.send(ring.invocation).is_ok(),
+        // The ring's own session deadline closes it.
+        Observed::Lost => true,
+    })
+    .await;
+}
+
+async fn observe_backlights(tx: mpsc::UnboundedSender<BacklightObservation>) {
+    observe(Observer::backlight, |observed| {
+        tx.send(match observed {
+            Observed::Answer(observation) => observation,
+            // The expiry timer lives in the agent, so a lost agent can never
+            // send the hide that closes a visible indicator.
+            Observed::Lost => agent_lost(),
+        })
+        .is_ok()
+    })
+    .await;
 }
 
 /// Fold a newly-produced command into the one still waiting to be sent.
