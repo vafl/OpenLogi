@@ -44,7 +44,8 @@ files; **keep this table in sync when you add or move one**:
 | `openlogi-inject/src/inject/macos/ax.rs` | the shared `AXUIElement` attribute reads (`CFRetained` adoption of the Copy-rule out-pointer) and `AXChildren` iteration |
 | `openlogi-inject/src/inject/macos/browser.rs` | Safari's toolbar-button navigation over `ax.rs`, and the off-thread `NSWorkspace` Safari validation |
 | `openlogi-inject/src/inject/macos/menu_shortcut.rs` | the hidden probe `NSMenu` AppKit remaps for the keyboard layout, and pressing the frontmost app's matching menu item through AX |
-| `openlogi-inject/src/inject/macos/{app_services,dock,symbolic_hotkey}.rs` | the `dlopen`'d private SPIs: `CoreDockSendNotification` and the CGS symbolic-hotkey trio |
+| `openlogi-inject/src/inject/macos/pointer_visibility.rs` | hiding the pointer from the background agent: the `SetsCursorInBackground` WindowServer connection property (two private `CGS*` calls, `dlsym`-resolved from CoreGraphics) and `CGDisplayHideCursor` / `CGDisplayShowCursor` via `core-graphics`, kept to a balanced one-hide count |
+| `openlogi-inject/src/inject/macos/{app_services,dock,symbolic_hotkey}.rs` | the `dlopen`'d private SPIs: `CoreDockSendNotification` and the CGS symbolic-hotkey trio (`app_services.rs` also resolves CoreGraphics and SkyLight symbols) |
 | `openlogi-inject/src/inject/macos/keyboard_layout.rs` | the active keyboard layout's `uchr` data (Text Input Source Services, read on the main thread) and `UCKeyTranslate` over it |
 | `openlogi-inject/src/inject/macos/main_thread.rs` | the bounded hand-off of main-thread work from the action worker to the main queue (`dispatch2`) |
 | `openlogi-overlay/src/platform.rs` | the Actions Ring helper's window policy: accessory activation, non-activating panel, the `NSEvent` global click-away monitor (`block2`), and `CGGetActiveDisplayList` / `CGDisplayBounds` |
@@ -227,7 +228,12 @@ its single user. The current set, all deliberate:
 - `openlogi-agent-core/src/watchers/camera.rs`: the CoreMediaIO property API —
   same reason.
 - `openlogi-inject`: the `dlopen`/`dlsym`-resolved private SPIs
-  (`CoreDockSendNotification`, the CGS symbolic-hotkey trio), and in
+  (`CoreDockSendNotification`, the CGS symbolic-hotkey trio, and
+  `pointer_visibility.rs`'s `CGSMainConnectionID` / `CGSSetConnectionProperty`
+  for the `SetsCursorInBackground` property: macOS only honours cursor changes
+  from the active app and no public API lets a background process hide the
+  pointer; the hide itself is the public `CGDisplayHideCursor` through
+  `core-graphics`), and in
   `keyboard_layout.rs` Text Input Source Services, `LMGetKbdType`, and
   `UCKeyTranslate` — `objc2-carbon` skips HIToolbox and `objc2-core-services`
   skips CarbonCore. `UCKeyTranslate`'s lengths are `UniCharCount`, an
@@ -282,6 +288,12 @@ under a `SAFETY` comment. Where it currently lives on macOS:
   thread reads the layout), so a worker hands the read to the main queue and
   waits a bounded time; only `UCKeyTranslate`, a pure function of the copied
   data, runs on the worker.
+- `inject/macos/pointer_visibility.rs` — the two `transmute`s of the
+  `dlsym`-resolved `CGSMainConnectionID` / `CGSSetConnectionProperty`
+  pointers to their CGSInternal signatures, and the two calls through them
+  that set `SetsCursorInBackground` on the process's own connection (the CF
+  key and value live for the call; the WindowServer copies them). The hide
+  and show themselves are safe `core-graphics` calls.
 - `permissions/macos.rs` — the CoreBluetooth force-link and the `CBManager`
   class-method send. `IOHIDCheckAccess` needs none: `objc2-io-kit` exposes it as
   a safe fn, in `openlogi-permissions` and `openlogi-hid` alike.
