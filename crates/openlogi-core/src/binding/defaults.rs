@@ -1,6 +1,6 @@
 //! Default bindings for a fresh device / gesture map.
 
-use super::action::Action;
+use super::action::{Action, HighlightEffect};
 use super::button::ButtonId;
 use super::gesture::GestureDirection;
 use super::value::Binding;
@@ -74,11 +74,16 @@ pub fn default_binding(button: ButtonId) -> Action {
         ButtonId::ThumbwheelScrollDown => Action::HorizontalScrollRight,
         ButtonId::GestureButton => Action::MissionControl,
         ButtonId::HapticPanel => Action::ShowActionsRing,
+        // The presenter's force-sensitive button: a light touch draws the laser
+        // dot, a firm press switches to the dimming spotlight. Unlike a mouse
+        // button there is no native function to preserve, so the default is a
+        // real binding and the divert plan always arms both levels.
+        ButtonId::PresenterTouch => Action::Highlight(HighlightEffect::LaserDot),
+        ButtonId::PresenterPress => Action::Highlight(HighlightEffect::Spotlight),
         // Keyboard keys stay on their native firmware function until the user
         // explicitly binds them; an unbound key is never diverted, so a
         // `None` default keeps the projection total without capturing anything.
-        // Nothing is bound to the presenter's two force levels yet either.
-        ButtonId::Control(_) | ButtonId::PresenterTouch | ButtonId::PresenterPress => Action::None,
+        ButtonId::Control(_) => Action::None,
     }
 }
 

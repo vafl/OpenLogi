@@ -13,8 +13,10 @@ use futures::stream::{self, Stream};
 use openlogi_agent_core::action_ring::ActionRingManager;
 use openlogi_agent_core::backlight_overlay::BacklightOverlayManager;
 use openlogi_agent_core::event_monitor::EventMonitor;
+use openlogi_agent_core::highlight::HighlightSession;
 use openlogi_agent_core::observable::ObservableState;
 use openlogi_agent_core::orchestrator::{Orchestrator, SharedHandles};
+use openlogi_agent_core::runtime::pointer_output::PointerRuntime;
 use openlogi_agent_core::runtime::scroll::{ScrollInputHandle, ScrollRuntime};
 use openlogi_agent_core::runtime::{ActionDispatcher, ActionRuntime};
 use openlogi_agent_core::watchers::shutdown::{StopOutcome, WatcherHandle};
@@ -114,6 +116,7 @@ fn spawn_ipc_server(
         pairing,
         event_monitor,
         Arc::clone(&inputs.ring),
+        Arc::clone(&inputs.highlight),
         inputs.dispatcher.clone(),
         backlight_overlay,
     );
@@ -126,11 +129,15 @@ fn spawn_ipc_server(
 /// until an action is dispatched, so [`bootstrap`] may start them.
 pub(crate) struct InputServices {
     pub(crate) ring: Arc<ActionRingManager>,
+    /// The held presenter highlight, written by the capture session and
+    /// served to the overlay by the IPC server.
+    pub(crate) highlight: Arc<HighlightSession>,
     pub(crate) triggers: tokio::sync::mpsc::UnboundedReceiver<Option<String>>,
     pub(crate) dispatcher: ActionDispatcher,
     action_runtime: ActionRuntime,
     pub(crate) scroll_input: ScrollInputHandle,
     scroll_runtime: ScrollRuntime,
+    pointer_runtime: PointerRuntime,
 }
 
 impl InputServices {
@@ -152,19 +159,30 @@ impl InputServices {
                 return None;
             }
         };
+        let pointer_runtime = match PointerRuntime::spawn() {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                warn!(error = %e, "could not start pointer worker — agent exiting");
+                return None;
+            }
+        };
+        let highlight = Arc::new(HighlightSession::new(pointer_runtime.output()));
         let dispatcher = action_runtime.dispatcher();
         let scroll_input = scroll_runtime.input();
         Some(Self {
             ring,
+            highlight,
             triggers,
             dispatcher,
             action_runtime,
             scroll_input,
             scroll_runtime,
+            pointer_runtime,
         })
     }
 
     pub(crate) fn shutdown(&mut self) {
+        self.pointer_runtime.shutdown();
         self.scroll_runtime.shutdown();
         self.action_runtime.shutdown();
     }
@@ -204,6 +222,7 @@ pub(crate) fn spawn_hidpp_watchers(
             inputs.dispatcher.clone(),
             inputs.scroll_input.clone(),
             shared.hook_maps.clone(),
+            Arc::clone(&inputs.highlight),
         ),
     );
     let host_switch = watchers::host_switch::spawn(

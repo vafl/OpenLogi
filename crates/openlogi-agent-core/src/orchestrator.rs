@@ -21,8 +21,8 @@ use openlogi_core::config::{
     Config, ConfigRevision, LightSettings, MouseProfileTarget, canonical_device_key,
 };
 use openlogi_core::device::{
-    Capabilities, ChangedOnLight, DeviceInventory, DeviceKind, LightCapabilities, LightState,
-    StandaloneDevice,
+    Capabilities, ChangedOnLight, DeviceInventory, DeviceKind, HIGHLIGHT_OVERLAY_SUPPORTED,
+    LightCapabilities, LightState, StandaloneDevice,
 };
 use openlogi_core::device_order::{DeviceIdentity, PhysicalDeviceKey};
 use openlogi_hid::{
@@ -38,7 +38,8 @@ use tracing::{debug, info, warn};
 
 use crate::action_ring::ActionRingSessionSpec;
 use crate::capture_plan::{
-    CapturePublication, SharedCapturePlans, hidpp_side_gesture_maps_for, plan_for_device,
+    CapturePublication, PlanContext, SharedCapturePlans, hidpp_side_gesture_maps_for,
+    plan_for_device,
 };
 use crate::hardware::{
     DeviceAccess, DeviceOp, HardwareContext, KeptOsLayouts, VolatileMouseSettings, WriteOrder,
@@ -64,8 +65,8 @@ use devices::{
     RECONNECT_REAPPLY_CONFIRM_RETRIES, VOLATILE_REAPPLY_CONFIRM_RETRIES,
     any_device_needs_capture_rearm, build_devices, config_keeps_os_layout, configured_report_rate,
     configured_wheel_mode, host_switch_links, is_hidpp_device, keeps_os_layout, main_wheel_divert,
-    newly_kept_os_layouts, os_layout_appeared, pick_current, plan_reapply, settings_moved,
-    stable_id, wheel_inverted,
+    newly_kept_os_layouts, os_layout_appeared, pick_current, plan_reapply, presenter_appeared,
+    presenter_route, settings_moved, stable_id, wheel_inverted,
 };
 
 /// The minimal per-device facts the agent needs: the config key (binding /
@@ -792,9 +793,12 @@ impl Orchestrator {
                 physical_key,
                 &dev.config_key,
                 route,
-                app,
-                rearm_generation,
-                self.os_mouse_hook_available,
+                PlanContext {
+                    app,
+                    rearm_generation,
+                    os_mouse_hook_available: self.os_mouse_hook_available,
+                    capabilities: dev.capabilities.as_ref(),
+                },
             );
             plan.dispatch.pointer_target = pointer_target;
             plan.dispatch.invert_wheel = wheel_inverted(&self.config, dev);
@@ -885,6 +889,13 @@ impl Orchestrator {
         for idx in layout_checks {
             if !targets.contains(&idx) {
                 self.keep_os_layout(&devices[idx]);
+            }
+        }
+        // The same for a presenter whose capability shows up late: it needs
+        // the level-reporting mode its first probe could not know to write.
+        for idx in presenter_appeared(&self.devices, &devices) {
+            if !targets.contains(&idx) {
+                self.apply_presenter(&devices[idx]);
             }
         }
         for idx in targets {
@@ -1000,6 +1011,7 @@ impl Orchestrator {
         if let Some(fn_lock) = self.config.fn_lock(key) {
             self.shared.write_fn_lock_in_background(&route, fn_lock);
         }
+        self.apply_presenter(dev);
         self.keep_os_layout(dev);
         if let Some(capabilities) = dev.light_capabilities
             && let Some(light) = self.effective_light_settings(key)
@@ -1007,6 +1019,34 @@ impl Orchestrator {
             self.shared
                 .hardware
                 .set_light_in_background(Some(route), &light, capabilities);
+        }
+    }
+
+    /// Configure `dev` as a presenter: both-levels force reporting, the
+    /// configured thresholds and haptics. See [`presenter_route`] for which
+    /// devices are asked.
+    fn apply_presenter(&self, dev: &AgentDevice) {
+        let Some(route) = presenter_route(dev, HIGHLIGHT_OVERLAY_SUPPORTED) else {
+            return;
+        };
+        crate::hardware::apply_presenter_in_background(
+            self.shared.device(route),
+            self.config.presenter(&dev.config_key).unwrap_or_default(),
+        );
+    }
+
+    /// Push changed presenter settings to the online presenters they belong
+    /// to. Only a table that differs from `previous` is written, and a removed
+    /// table is not: the device keeps what it holds.
+    fn apply_changed_presenters(&self, previous: &Config) {
+        for dev in self.devices.iter().filter(|dev| dev.online) {
+            let settings = self.config.presenter(&dev.config_key);
+            if settings.is_some()
+                && settings != previous.presenter(&dev.config_key)
+                && self.config.device_enabled(&dev.config_key)
+            {
+                self.apply_presenter(dev);
+            }
         }
     }
 
@@ -1369,6 +1409,7 @@ impl Orchestrator {
         self.rebuild();
         self.apply_native_wheel_modes();
         self.apply_changed_fn_locks(&previous);
+        self.apply_changed_presenters(&previous);
         self.apply_enabled_os_layouts(&previous);
         self.changed_lights(&previous_lights)
     }

@@ -69,8 +69,9 @@ pub enum ButtonId {
     WheelTiltRight,
     /// The Spotlight 2 presenter's top button at its first force level
     /// ("touch") — `0x1b04` CID `0x00d8`, "Cursor Button Long Press"; the
-    /// device layer owns the presenter CIDs. Diverted with raw-XY, it reports
-    /// the presenter's motion while held; see [`ButtonId::PRESENTER`].
+    /// device layer owns the presenter CIDs. Diverted with raw-XY and bound
+    /// to a [`Action::Highlight`](super::Action::Highlight); see
+    /// [`ButtonId::PRESENTER`].
     PresenterTouch,
     /// The Spotlight 2 presenter's top button at its second force level
     /// ("firm press"). Counterpart to [`ButtonId::PresenterTouch`].
@@ -115,7 +116,10 @@ impl ButtonId {
     /// [`ButtonId::ALL`].
     ///
     /// `ALL` feeds the GUI's mouse trigger lists and the gesture tables, none of
-    /// which may offer a presenter control.
+    /// which may offer a presenter control. Only `button_bindings_for`
+    /// consults this list as well, so the presenter defaults appear in a
+    /// device's effective binding map (the source of the agent's divert plan)
+    /// without any persisted mouse config gaining a presenter entry.
     pub const PRESENTER: [ButtonId; 3] = [
         ButtonId::PresenterTouch,
         ButtonId::PresenterPress,

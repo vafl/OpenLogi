@@ -156,7 +156,10 @@ to start while it is running.
 The script covers an online mouse (DPI and SmartShift writes persist and read
 back, battery drains so poll-driven repaints are visible), an offline mouse, a
 lighting-capable keyboard, a directly-attached device, and a full Bolt pairing
-flow (discovery → passkey → paired). Its agent version carries a `-mock` suffix,
+flow (discovery → passkey → paired). With `OPENLOGI_MOCK_HIGHLIGHT=1` it also
+serves a Spotlight 2-like presenter and scripts a presenter highlight on a loop,
+for the Presenter panel and the overlay's highlight (it never moves or hides
+your real pointer). Its agent version carries a `-mock` suffix,
 so a mock session is identifiable in the UI. It is a dev tool only and is never
 bundled.
 

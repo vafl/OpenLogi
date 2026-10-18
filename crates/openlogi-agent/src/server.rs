@@ -12,6 +12,7 @@ use futures::StreamExt as _;
 use openlogi_agent_core::action_ring::ActionRingManager;
 use openlogi_agent_core::backlight_overlay::BacklightOverlayManager;
 use openlogi_agent_core::event_monitor::SharedEventMonitor;
+use openlogi_agent_core::highlight::HighlightSession;
 use openlogi_agent_core::observable::ObservableState;
 use openlogi_agent_core::orchestrator::{self, Orchestrator, SharedHandles};
 use openlogi_agent_core::runtime::ActionDispatcher;
@@ -26,9 +27,9 @@ use openlogi_hid::{
 use openlogi_ipc::transport;
 use openlogi_ipc::{
     ActionRingCommandError, ActionRingInvocation, Agent, AgentSnapshot, AgentStatus,
-    BacklightObservation, ClientKind, ConfigReloadError, Generation, Identity, MonitorEvent,
-    Observation, PROTOCOL_VERSION, PairingCommandError, PairingFailure, PairingUpdate,
-    RingObservation, SavedConfig,
+    BacklightObservation, ClientKind, ConfigReloadError, Generation, HighlightObservation,
+    Identity, MonitorEvent, Observation, PROTOCOL_VERSION, PairingCommandError, PairingFailure,
+    PairingUpdate, RingObservation, SavedConfig,
 };
 use succession::Compat;
 
@@ -53,6 +54,8 @@ pub struct AgentServer {
     pub pairing: Arc<PairingManager>,
     pub event_monitor: SharedEventMonitor,
     pub action_ring: Arc<ActionRingManager>,
+    /// The presenter highlight the overlay observes and reports back to.
+    pub highlight: Arc<HighlightSession>,
     pub dispatcher: ActionDispatcher,
     pub ring_haptics: RingHapticPlayer,
     pub backlight_overlay: BacklightOverlayManager,
@@ -75,6 +78,7 @@ impl AgentServer {
         pairing: Arc<PairingManager>,
         event_monitor: SharedEventMonitor,
         action_ring: Arc<ActionRingManager>,
+        highlight: Arc<HighlightSession>,
         dispatcher: ActionDispatcher,
         backlight_overlay: BacklightOverlayManager,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<ClientKind>) {
@@ -88,6 +92,7 @@ impl AgentServer {
                 pairing,
                 event_monitor,
                 action_ring,
+                highlight,
                 dispatcher,
                 ring_haptics,
                 backlight_overlay,
@@ -420,6 +425,18 @@ impl Agent for AgentServer {
 
     async fn observe_action_ring(self, _: Context, since: Generation) -> RingObservation {
         self.action_ring.observe(since).await
+    }
+
+    async fn observe_highlight(self, _: Context, since: Generation) -> HighlightObservation {
+        self.highlight.observe(since).await
+    }
+
+    async fn highlight_released(self, _: Context, session_id: u64, x: f64, y: f64) {
+        self.highlight.released(session_id, x, y);
+    }
+
+    async fn highlight_moved(self, _: Context, session_id: u64, x: f64, y: f64) {
+        self.highlight.moved(session_id, x, y);
     }
 
     async fn declare_client(self, _: Context, kind: ClientKind) {

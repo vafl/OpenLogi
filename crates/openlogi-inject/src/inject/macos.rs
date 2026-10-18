@@ -16,7 +16,7 @@ use openlogi_core::config::FunctionKey;
 
 use super::{HeldKey, HeldModifiers, KeyPhase};
 
-/// Shared resolver for private ApplicationServices and SkyLight SPI.
+/// Shared resolver for private ApplicationServices, CoreGraphics and SkyLight SPI.
 #[expect(
     unsafe_code,
     reason = "private ApplicationServices SPI symbols are resolved via dlopen/dlsym FFI"
@@ -56,6 +56,13 @@ mod main_thread;
     reason = "Accessibility element creation and actions are unsafe FFI calls"
 )]
 mod menu_shortcut;
+/// Pointer hiding from a background process: two private `CGS*` connection
+/// calls, resolved lazily like the other private SPIs.
+#[expect(
+    unsafe_code,
+    reason = "the private CGS connection SPI that lets a background process hide the cursor is only reachable via dlopen/dlsym FFI"
+)]
+mod pointer_visibility;
 mod scroll;
 /// DockSwipe events with read-only, per-display Space confirmation.
 #[expect(
@@ -313,6 +320,42 @@ fn post_click(button: CGMouseButton) {
             tracing::warn!(phase, "CGEvent::new_mouse_event failed");
         }
     }
+}
+
+/// Move the pointer to `(x, y)` (global top-left-origin points, the space
+/// `CGEvent` locations use).
+///
+/// Only a mouse-moved event is posted, tagged like every other injection so
+/// OpenLogi's own tap skips it: it moves the cursor and tells apps (hover,
+/// tracking areas) in one step. `CGWarpMouseCursorPosition` is deliberately not
+/// used, because it suppresses the real mouse's events for ~250 ms after every
+/// call, which would freeze the user's hand at the 100 Hz this is called at.
+pub(super) fn move_pointer_to(x: f64, y: f64) {
+    let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+        tracing::warn!("CGEventSource::new failed for pointer move");
+        return;
+    };
+    if let Ok(ev) = CGEvent::new_mouse_event(
+        src,
+        CGEventType::MouseMoved,
+        CGPoint::new(x, y),
+        CGMouseButton::Left,
+    ) {
+        tag_synthetic(&ev);
+        ev.post(CGEventTapLocation::HID);
+    } else {
+        tracing::warn!("CGEvent::new_mouse_event failed for pointer move");
+    }
+}
+
+/// Hide the pointer; see [`pointer_visibility`].
+pub(super) fn hide_pointer() {
+    pointer_visibility::hide();
+}
+
+/// Show the pointer; see [`pointer_visibility`].
+pub(super) fn show_pointer() {
+    pointer_visibility::show();
 }
 
 /// Post a down + up pair for an "extra" mouse button by its raw button

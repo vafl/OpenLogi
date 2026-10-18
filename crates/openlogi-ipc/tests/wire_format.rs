@@ -33,8 +33,14 @@ use std::fmt::Write;
 
 use bincode::Options;
 use openlogi_core::app::ForegroundApp;
-use openlogi_core::binding::{ActionRingIcon, ActionRingSlot, ButtonId, KeyCombo};
-use openlogi_core::config::{ConfigRevision, Lighting, ScrollResolution};
+use openlogi_core::binding::{
+    Action, ActionRingIcon, ActionRingSlot, ButtonId, HighlightEffect, KeyCombo,
+};
+use openlogi_core::color::Rgb;
+use openlogi_core::config::{
+    ConfigRevision, HighlightAppearance, HighlightMotion, HighlightPointer, Lighting,
+    ScrollResolution,
+};
 use openlogi_core::device::{
     BatteryInfo, BatteryLevel, BatteryStatus, Capabilities, ChangedOnLight, DeviceInventory,
     DeviceKind, DeviceModelInfo, DeviceTransports, LightCapabilities, LightState, LightValueRange,
@@ -49,11 +55,11 @@ use openlogi_core::hid::{
     SmartShiftThreshold, TunableTorque, WriteError,
 };
 use openlogi_ipc::{
-    ActionRingCommandError, ActionRingInvocation, ActionRingPresentation, AgentRequest,
-    AgentSnapshot, AgentStatus, BacklightObservation, ChosenLight, ClientKind, ConfigReloadError,
-    ForegroundApps, FoundDevice, Identity, InventoryHealth, MonitorEvent, Observation,
-    ObservedLight, PROTOCOL_VERSION, PairingCommandError, PairingFailure, PairingPhase,
-    PairingUpdate, RingObservation, SavedConfig,
+    ActionRingCommandError, ActionRingInvocation, ActionRingPresentation, ActiveHighlight,
+    AgentRequest, AgentSnapshot, AgentStatus, BacklightObservation, ChosenLight, ClientKind,
+    ConfigReloadError, ForegroundApps, FoundDevice, HighlightObservation, Identity,
+    InventoryHealth, MonitorEvent, Observation, ObservedLight, PROTOCOL_VERSION,
+    PairingCommandError, PairingFailure, PairingPhase, PairingUpdate, RingObservation, SavedConfig,
 };
 use succession::{Compat, Run};
 
@@ -421,16 +427,99 @@ fn action_ring_types() {
 
 #[test]
 fn highlight_types() {
+    assert_wire(&AgentRequest::ObserveHighlight { since: 7 }, "2607");
+    assert_wire(
+        &AgentRequest::HighlightReleased {
+            session_id: 3,
+            x: 1.0,
+            y: -2.0,
+        },
+        "2703000000000000f03f00000000000000c0",
+    );
+    assert_wire(
+        &AgentRequest::HighlightMoved {
+            session_id: 3,
+            x: 1.0,
+            y: -2.0,
+        },
+        "2803000000000000f03f00000000000000c0",
+    );
+    assert_wire(&HighlightEffect::LaserDot, "00");
+    assert_wire(&HighlightEffect::Spotlight, "01");
+    assert_wire(&HighlightPointer::Hide, "00");
+    assert_wire(&HighlightPointer::Follow, "01");
+    // The binding that selects the effect rides inside RPC payloads too:
+    // `Highlight` is the last `Action` variant, followed by the effect index.
+    assert_wire(&Action::Highlight(HighlightEffect::LaserDot), "3600");
+    assert_wire(&Action::Highlight(HighlightEffect::Spotlight), "3601");
     // `ButtonId` crosses the wire as its persisted name.
     assert_wire(&ButtonId::PresenterTouch, "0e50726573656e746572546f756368");
     assert_wire(&ButtonId::PresenterPress, "0e50726573656e7465725072657373");
     assert_wire(&ButtonId::PresenterClick, "0e50726573656e746572436c69636b");
+    assert_wire(
+        &ActiveHighlight {
+            session_id: 3,
+            effect: HighlightEffect::Spotlight,
+            origin: Some((100.5, 20.0)),
+            travel_x: -4,
+            travel_y: 9,
+            pointer: HighlightPointer::Follow,
+            appearance: HighlightAppearance {
+                laser_size: 20,
+                laser_color: Rgb::new(0x00, 0xff, 0x40),
+                spotlight_size: 250,
+                spotlight_dim: 80,
+            },
+            motion: HighlightMotion {
+                sensitivity: 60,
+                precision: false,
+                steady_release: true,
+            },
+        },
+        "030101000000000020594000000000000034400712011406303066663430fa503c0001",
+    );
+    assert_wire(
+        &ActiveHighlight {
+            session_id: 3,
+            effect: HighlightEffect::LaserDot,
+            origin: None,
+            travel_x: 0,
+            travel_y: 0,
+            pointer: HighlightPointer::Hide,
+            appearance: HighlightAppearance::default(),
+            motion: HighlightMotion::default(),
+        },
+        "0300000000000c06666632613261aa32640101",
+    );
     assert_wire(
         &Capabilities {
             presenter_highlight: true,
             ..Capabilities::default()
         },
         "00000000000000000000000000000001",
+    );
+    assert_wire(
+        &HighlightObservation {
+            generation: 5,
+            active: None,
+        },
+        "0500",
+    );
+    assert_wire(
+        &HighlightObservation {
+            generation: 6,
+            active: Some(ActiveHighlight {
+                session_id: 3,
+                effect: HighlightEffect::LaserDot,
+                origin: None,
+                travel_x: 1,
+                travel_y: -1,
+                pointer: HighlightPointer::Hide,
+                appearance: HighlightAppearance::default(),
+                motion: HighlightMotion::default(),
+            }),
+        },
+        "06010300000201000c06666632613261aa32640101",
     );
 }
 
