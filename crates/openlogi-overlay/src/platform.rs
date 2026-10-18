@@ -1,11 +1,14 @@
-//! Native window policy for the standalone Actions Ring overlay.
+//! Native window policy for the overlay's windows: the Actions Ring panel and
+//! the click-through presenter highlight.
 
+mod display;
 #[cfg(not(target_os = "windows"))]
 mod placement;
 // Keep Windows geometry tests runnable on the host; only native.rs needs Win32.
 #[cfg(any(target_os = "windows", test))]
 mod windows;
 
+pub(crate) use display::{Located, locate};
 #[cfg(not(target_os = "windows"))]
 pub(crate) use placement::RingPlacement;
 #[cfg(target_os = "windows")]
@@ -24,17 +27,138 @@ pub fn configure_application() {
 }
 
 /// Make the transparent ring panel borderless and remove its native shadow.
+///
+/// Runs inside a GPUI update, where a style change on the persistent
+/// highlight window would notify GPUI's resize callbacks while the app is
+/// borrowed; the highlight window is recognised by the click-through its own
+/// policy set and left alone.
 #[cfg(target_os = "macos")]
 pub fn configure_windows() {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSWindowStyleMask};
 
     if let Some(marker) = MainThreadMarker::new() {
-        for window in NSApplication::sharedApplication(marker).windows() {
+        for window in NSApplication::sharedApplication(marker)
+            .windows()
+            .into_iter()
+            .filter(|window| !window.ignoresMouseEvents())
+        {
             window.setStyleMask(NSWindowStyleMask::NonactivatingPanel);
             window.setHasShadow(false);
         }
     }
+}
+
+/// Identity of the native view GPUI renders a window into, taken while the
+/// window is borrowed so the window can be configured natively later, outside
+/// any GPUI update. Only compared, never dereferenced.
+#[cfg(target_os = "macos")]
+pub struct NativeView(std::ptr::NonNull<std::ffi::c_void>);
+
+/// No native window policy is applied away from macOS.
+#[cfg(not(target_os = "macos"))]
+pub struct NativeView(());
+
+/// The native view of GPUI `window`, if it has one.
+#[cfg(target_os = "macos")]
+pub fn native_view(window: &gpui::Window) -> Option<NativeView> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    Some(NativeView(handle.ns_view))
+}
+
+/// No native view away from macOS: nothing here needs one.
+#[cfg(not(target_os = "macos"))]
+pub fn native_view(_window: &gpui::Window) -> Option<NativeView> {
+    None
+}
+
+/// The `NSWindow` hosting `view`, if it can be found.
+///
+/// GPUI's raw handle is its own view, a subview of the window's content
+/// view. Match pointers against each NSWindow's view tree instead of
+/// dereferencing the raw pointer: no unsafe, and a stale handle simply
+/// matches nothing.
+#[cfg(target_os = "macos")]
+fn native_window(
+    view: &NativeView,
+    marker: objc2::MainThreadMarker,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    use objc2_app_kit::NSApplication;
+
+    NSApplication::sharedApplication(marker)
+        .windows()
+        .into_iter()
+        .find(|native| {
+            native.contentView().is_some_and(|content| {
+                content.subviews().iter().any(|subview| {
+                    objc2::rc::Retained::as_ptr(&subview).cast::<std::ffi::c_void>()
+                        == view.0.as_ptr()
+                })
+            })
+        })
+}
+
+/// Make a highlight window click-through, shadowless, and high enough to stay
+/// above full-screen presentation apps.
+///
+/// GPUI places a `PopUp` at `NSPopUpWindowLevel` (101), which a full-screen
+/// slideshow's own space can still cover. The highlight is raised to
+/// `NSScreenSaverWindowLevel` (1000) and joins every space as a full-screen
+/// auxiliary window so it draws over a presenter's full-screen app. Applied to
+/// highlight windows only: the ring must keep receiving mouse events.
+///
+/// Style and frame changes make AppKit notify GPUI's resize callbacks, which
+/// borrow the app: call this outside any GPUI update (with the view taken
+/// from [`native_view`] inside one), or each change logs "RefCell already
+/// borrowed" and GPUI misses the new size.
+///
+/// Returns whether the policy was applied. A highlight window is persistent
+/// and covers its display, so one that is not click-through would swallow
+/// every click: on `false` the caller must remove it.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn configure_highlight_window(view: &NativeView) -> bool {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindowCollectionBehavior, NSWindowStyleMask};
+
+    let Some(marker) = MainThreadMarker::new() else {
+        return false;
+    };
+    let Some(native) = native_window(view, marker) else {
+        return false;
+    };
+    // First, so a failure past this point leaves the window click-through.
+    native.setIgnoresMouseEvents(true);
+    native.setStyleMask(NSWindowStyleMask::NonactivatingPanel);
+    native.setHasShadow(false);
+    // AppKit keeps a window below the menu bar when it is shown, which
+    // shifts it by the bar's height; the highlight maps global cursor
+    // positions onto the window, so it must sit exactly on its screen.
+    if let Some(screen) = native.screen() {
+        native.setFrame_display(screen.frame(), true);
+    }
+    native.setLevel(NSScreenSaverWindowLevel);
+    native.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    true
+}
+
+/// The click-through and level policy is macOS-only, and so is the highlight
+/// window that needs it (`HIGHLIGHT_OVERLAY_SUPPORTED`); nothing opens one
+/// elsewhere, so there is nothing to configure and nothing to fail.
+#[cfg(not(target_os = "macos"))]
+#[must_use]
+pub fn configure_highlight_window(_view: &NativeView) -> bool {
+    true
 }
 
 /// No native application policy is required away from macOS.

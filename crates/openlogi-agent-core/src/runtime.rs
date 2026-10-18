@@ -8,6 +8,7 @@
 mod button;
 pub mod hook;
 mod pointer;
+pub mod pointer_output;
 pub mod scroll;
 
 use std::collections::HashMap;

@@ -13,8 +13,10 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use openlogi_core::app::ForegroundApp;
-use openlogi_core::binding::{ActionRingIcon, ActionRingSlot};
-use openlogi_core::config::{ConfigRevision, Lighting};
+use openlogi_core::binding::{ActionRingIcon, ActionRingSlot, HighlightEffect};
+use openlogi_core::config::{
+    ConfigRevision, HighlightAppearance, HighlightMotion, HighlightPointer, Lighting,
+};
 use openlogi_core::device::{ChangedOnLight, DeviceInventory, LightState, StandaloneDevice};
 use openlogi_core::hid::{
     BacklightChange, BacklightState, DeviceRoute, Dpi, DpiInfo, EasySwitchHosts, FnLockState,
@@ -112,7 +114,16 @@ pub use succession::Identity;
 ///      control's value, or the user chose that control. A file at another
 ///      revision loads as a plain reload. `Agent::observe_backlight`
 ///      appended — the level a keyboard's backlight keys set, for the
-///      overlay's transient indicator.
+///      overlay's transient indicator. The Spotlight 2 highlight appended:
+///      `Action::Highlight` (with `HighlightEffect`),
+///      `ButtonId::{PresenterTouch, PresenterPress, PresenterClick}`,
+///      `Capabilities::presenter_highlight`,
+///      `HidppOperation::ConfigurePresenter`,
+///      `WriteError::{ForceLevelModeNotApplied, ForceThresholdsNotApplied}`,
+///      `Agent::{observe_highlight, highlight_moved, highlight_released}` and
+///      `HighlightObservation` / `ActiveHighlight` — the held highlight is
+///      state of its own cell, and the overlay reports where the dot is and
+///      where it ended so the agent can move the pointer.
 pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Environment variable through which the agent hands a supervised helper the
@@ -514,6 +525,49 @@ pub struct BacklightObservation {
     pub visible: bool,
 }
 
+/// One held presenter highlight, as the overlay should draw it.
+///
+/// Plain data the overlay renders: the agent owns the capture and the
+/// binding that chose [`HighlightEffect`], and only publishes the result.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ActiveHighlight {
+    /// Opaque session identity; changes for every new press, so the overlay
+    /// can tell a fresh press from a continuation of the previous one.
+    pub session_id: u64,
+    /// What to draw while the control is held.
+    pub effect: HighlightEffect,
+    /// The global cursor position at the press, in top-left-origin points, or
+    /// `None` when the agent could not read it.
+    pub origin: Option<(f64, f64)>,
+    /// Raw-XY horizontal deltas summed since the press, in device units.
+    pub travel_x: i64,
+    /// Raw-XY vertical deltas summed since the press, in device units.
+    pub travel_y: i64,
+    /// What the visible pointer does while this highlight shows.
+    pub pointer: HighlightPointer,
+    /// How to draw it: laser dot size and colour, spotlight size and
+    /// dimming.
+    pub appearance: HighlightAppearance,
+    /// How it moves: sensitivity, precision damping and the steady-release
+    /// flag.
+    pub motion: HighlightMotion,
+}
+
+/// The presenter highlight the overlay should be showing, stamped with its
+/// generation.
+///
+/// Its own cell, like [`RingObservation`]: the overlay watches it at motion
+/// rate (~100 Hz while a presenter button is held), which must not wake the
+/// settings app's inventory observer.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HighlightObservation {
+    /// See [`Generation`]. Pass it back to the next [`Agent::observe_highlight`].
+    pub generation: Generation,
+    /// The highlight to draw, or `None` for none — which is also how the
+    /// button's release arrives, so there is no "ended" message to invent.
+    pub active: Option<ActiveHighlight>,
+}
+
 /// Why an Actions Ring interaction command was rejected.
 ///
 /// Variants are append-only because this enum crosses bincode IPC.
@@ -738,4 +792,19 @@ pub trait Agent {
     async fn reload_saved_config(saved: SavedConfig) -> Result<(), ConfigReloadError>;
     /// Block until the transient keyboard-backlight indicator changes.
     async fn observe_backlight(since: Generation) -> BacklightObservation;
+    /// Block until the presenter highlight the overlay should be drawing
+    /// differs from `since`, then return it. Same contract as
+    /// [`Agent::observe`] — whole state, hold window, `0` for "seen nothing" —
+    /// over the highlight's own cell.
+    async fn observe_highlight(since: Generation) -> HighlightObservation;
+    /// The overlay's report that highlight `session_id` ended with its dot at
+    /// `(x, y)`, in global top-left-origin points (the space
+    /// `ActiveHighlight::origin` uses). The agent moves the pointer there if
+    /// `session_id` is the most recently ended session, and ignores any other.
+    async fn highlight_released(session_id: u64, x: f64, y: f64);
+    /// The overlay's running report that highlight `session_id` is currently
+    /// at `(x, y)`, in the same global space as
+    /// [`Agent::highlight_released`]. The agent moves the pointer there while
+    /// `session_id` is the active session, and ignores any other.
+    async fn highlight_moved(session_id: u64, x: f64, y: f64);
 }

@@ -5,21 +5,15 @@
 //! keyboard through `openlogi_agent_core::hardware::set_lighting_in_background`
 //! (the agent, over IPC — the GUI has no device I/O of its own).
 
-use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Render, Role,
-    StatefulInteractiveElement as _, Styled, Subscription, Toggled, Window, div, px, rgb,
-};
-use gpui_base::Button as BaseButton;
+use gpui::{Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div};
 use gpui_component::{Selectable as _, h_flex, slider::Slider, v_flex};
 use openlogi_core::color::Rgb;
 use openlogi_core::config::Lighting;
 
 use crate::state::{AppState, StateEvent};
 use crate::ui::commit_slider::{CommitSlider, SliderRange};
-use crate::ui::components::Toggle;
+use crate::ui::components::{Toggle, color_swatch};
 use crate::ui::theme::{self, Palette, Typography as _};
-
-const SWATCH: f32 = 28.;
 
 /// Preset colors. Deliberately small — covering the common keyboard accent
 /// colors.
@@ -133,38 +127,19 @@ impl Render for LightingPanel {
 
 /// One color swatch. Clicking it turns lighting on and sets that color.
 fn swatch(color: Rgb, current: &Lighting, pal: Palette) -> impl IntoElement {
-    let selected = current.enabled && current.color == color;
-    BaseButton::new(("light-swatch", color.packed()))
-        .role(Role::RadioButton)
-        .selected(selected)
-        .accessibility_label(format!(
-            "{} #{:06X}",
-            tr!("device.lighting"),
-            color.packed()
-        ))
-        .aria_toggled(if selected {
-            Toggled::True
-        } else {
-            Toggled::False
-        })
-        .aria_selected(selected)
-        .size(px(SWATCH))
-        .rounded(pal.control_radius)
-        .border_2()
-        .border_color(if selected {
-            theme::accent()
-        } else {
-            pal.border
-        })
-        .bg(rgb(color.packed()))
-        .cursor_pointer()
-        .focus_visible(|style| style.border_color(theme::accent()))
-        .on_click(move |_event, _window, cx| {
+    color_swatch(
+        ("light-swatch", color.packed()),
+        &tr!("device.lighting"),
+        color,
+        current.enabled && current.color == color,
+        pal,
+        move |cx| {
             AppState::apply(cx, |state| {
                 let mut next = state.lighting();
                 next.enabled = true;
                 next.color = color;
                 state.commit_lighting(next)
             });
-        })
+        },
+    )
 }

@@ -17,7 +17,7 @@ use gpui_component::{
 use openlogi_core::hid::{BacklightChange, BacklightState, BacklightStatus};
 
 use crate::state::{AppState, BacklightLoad, DeviceKey};
-use crate::ui::components::{PanelCard, Toggle, toggle_row};
+use crate::ui::components::{PanelCard, Toggle, setting_row};
 use crate::ui::status::{retry_line, status_line};
 use crate::ui::theme::{Palette, Typography as _};
 
@@ -76,7 +76,7 @@ pub(super) fn backlight_card(facts: Option<BacklightFacts>, pal: Palette) -> Opt
 /// level and how it is chosen have nothing to act on, so those rows are shown
 /// but disabled; battery saving still applies.
 fn backlight_rows(state: BacklightState, pal: Palette) -> impl IntoElement {
-    let lit_row = toggle_row(
+    let lit_row = setting_row(
         "backlight-row",
         pal,
         tr!("device.light_the_keys"),
@@ -89,7 +89,7 @@ fn backlight_rows(state: BacklightState, pal: Palette) -> impl IntoElement {
         .gap_4()
         .child(lit_row)
         .when(state.controls.automatic, |rows| {
-            rows.child(toggle_row(
+            rows.child(setting_row(
                 "automatic-brightness-row",
                 pal,
                 tr!("device.automatic_brightness"),
@@ -104,7 +104,7 @@ fn backlight_rows(state: BacklightState, pal: Palette) -> impl IntoElement {
             rows.child(level_row(state, pal))
         })
         .when(state.controls.power_save, |rows| {
-            rows.child(toggle_row(
+            rows.child(setting_row(
                 "battery-saving-row",
                 pal,
                 tr!("device.battery_saving"),

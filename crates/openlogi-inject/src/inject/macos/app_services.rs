@@ -11,6 +11,14 @@ pub(super) fn symbol(symbol: &CStr) -> Option<*mut c_void> {
     resolve(APP_SERVICES, &HANDLE, symbol)
 }
 
+/// The WindowServer connection SPI lives in CoreGraphics; resolve it without
+/// a strong link.
+pub(super) fn core_graphics_symbol(symbol: &CStr) -> Option<*mut c_void> {
+    const CORE_GRAPHICS: &CStr = c"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
+    static HANDLE: OnceLock<usize> = OnceLock::new();
+    resolve(CORE_GRAPHICS, &HANDLE, symbol)
+}
+
 /// Read-only Space SPI lives in SkyLight; resolve it without a strong link.
 pub(super) fn sky_light_symbol(symbol: &CStr) -> Option<*mut c_void> {
     const SKY_LIGHT: &CStr = c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight";

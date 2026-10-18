@@ -557,6 +557,62 @@ pub fn post_scroll(delta: ScrollDelta) {
     }
 }
 
+/// Move the OS pointer to `(x, y)`, in global top-left-origin points: the space
+/// `openlogi_hook::cursor_position()` reports, with the primary display's
+/// top-left corner as the origin and other displays at their desktop offsets.
+///
+/// macOS posts a (self-tagged) mouse-moved event, which moves the pointer and
+/// tells apps about it without suppressing the real mouse. Linux and Windows
+/// do nothing: the Linux uinput device is relative-only, and the Windows backend does not link the
+/// `Win32_UI_WindowsAndMessaging` feature `SetCursorPos` lives behind.
+/// Non-finite coordinates are rejected at this I/O boundary.
+pub fn move_pointer_to(x: f64, y: f64) {
+    let Some((x, y)) = finite_point(x, y) else {
+        return;
+    };
+    cfg_select! {
+        target_os = "macos" => {
+            macos::move_pointer_to(x, y);
+        }
+        _ => {
+            let _ = (x, y);
+        }
+    }
+}
+
+/// `(x, y)` when both coordinates are finite; a NaN or infinite position must
+/// never reach the OS.
+fn finite_point(x: f64, y: f64) -> Option<(f64, f64)> {
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+/// Hide the OS pointer, for the duration of a presenter highlight.
+///
+/// Repeated calls never nest, so one [`show_pointer`] always restores the
+/// pointer. macOS hides it from this background process through the
+/// WindowServer's `SetsCursorInBackground` connection property, and leaves it
+/// visible (one warning) when that private SPI is missing; Linux and Windows
+/// do nothing (there is no cross-desktop way to hide the pointer for other
+/// applications).
+pub fn hide_pointer() {
+    cfg_select! {
+        target_os = "macos" => {
+            macos::hide_pointer();
+        }
+        _ => {}
+    }
+}
+
+/// Show the OS pointer again; idempotent, see [`hide_pointer`].
+pub fn show_pointer() {
+    cfg_select! {
+        target_os = "macos" => {
+            macos::show_pointer();
+        }
+        _ => {}
+    }
+}
+
 /// Lifecycle phase of one synthetic smooth-scroll frame.
 ///
 /// Part of the runtime contract — the motion engine emits a balanced
@@ -697,7 +753,20 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     use super::{HeldKey, HeldOutput, HoldTransition};
-    use super::{QuantizedScroll, ScrollQuantizer};
+    use super::{QuantizedScroll, ScrollQuantizer, finite_point};
+
+    #[test]
+    fn pointer_moves_reject_non_finite_coordinates() {
+        assert_eq!(finite_point(1.5, -2.0), Some((1.5, -2.0)));
+        for (x, y) in [
+            (f64::NAN, 0.0),
+            (0.0, f64::NAN),
+            (f64::INFINITY, 0.0),
+            (0.0, f64::NEG_INFINITY),
+        ] {
+            assert_eq!(finite_point(x, y), None, "({x}, {y})");
+        }
+    }
 
     /// Synthetic high-resolution input: eight eighth-ticks must total exactly
     /// one Windows/Linux wheel detent (120 raw units). This is deterministic

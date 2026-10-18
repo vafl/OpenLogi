@@ -310,6 +310,28 @@ pub(super) fn os_layout_appeared(prev: &[AgentDevice], next: &[AgentDevice]) -> 
         .collect()
 }
 
+/// Indices into `next` of online devices that report `presenter_highlight` on
+/// a route that was already online without it, such as a Spotlight 2 whose
+/// `0x1b04` control walk lost a reply over Bluetooth until a later re-probe.
+/// A device that just came online or changed route is reapplied instead.
+pub(super) fn presenter_appeared(prev: &[AgentDevice], next: &[AgentDevice]) -> Vec<usize> {
+    let is_presenter = |dev: &AgentDevice| {
+        dev.capabilities
+            .is_some_and(|caps| caps.presenter_highlight)
+    };
+    next.iter()
+        .enumerate()
+        .filter(|(_, dev)| dev.online && dev.route.is_some() && is_presenter(dev))
+        .filter(|(_, dev)| {
+            let id = stable_id(dev);
+            prev.iter()
+                .find(|p| stable_id(p) == id)
+                .is_some_and(|p| p.online && p.route == dev.route && !is_presenter(p))
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 /// Whether `config` keeps the key layout of the device under `key` on the
 /// host OS, whatever the device supports: enabled, with the setting on.
 pub(super) fn config_keeps_os_layout(config: &Config, key: &str) -> bool {
@@ -321,6 +343,25 @@ pub(super) fn config_keeps_os_layout(config: &Config, key: &str) -> bool {
 pub(super) fn keeps_os_layout(config: &Config, dev: &AgentDevice) -> bool {
     dev.capabilities.is_some_and(|caps| caps.os_layout)
         && config_keeps_os_layout(config, &dev.config_key)
+}
+
+/// The route to configure `dev` as a presenter over: an online device that
+/// reports `presenter_highlight`, on a host that can show the highlight
+/// (`highlight_supported`, [`openlogi_core::device::HIGHLIGHT_OVERLAY_SUPPORTED`] in production):
+/// elsewhere nothing is written to the device. Mouse buttons (`0x1b04`)
+/// alone do not qualify; the write layer leaves a device without `0x19c0`
+/// untouched, but it is not even asked.
+pub(super) fn presenter_route(
+    dev: &AgentDevice,
+    highlight_supported: bool,
+) -> Option<&DeviceRoute> {
+    (highlight_supported
+        && dev.online
+        && dev
+            .capabilities
+            .is_some_and(|caps| caps.presenter_highlight))
+    .then_some(dev.route.as_ref())
+    .flatten()
 }
 
 /// The devices whose "keep OS layout" takes effect going from `previous` to

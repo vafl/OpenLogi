@@ -170,7 +170,7 @@ Four production executables land in `target/release/`:
 |---|---|
 | `openlogi` | CLI — inventory, diagnostics, asset sync |
 | `openlogi-desktop` | Desktop GUI |
-| `openlogi-overlay` | Actions Ring overlay helper |
+| `openlogi-overlay` | Actions Ring overlay helper (the presenter highlight is macOS-only) |
 | `openlogi-agent` | Background agent — HID++ loop, input hook |
 
 ## Device access: udev rules

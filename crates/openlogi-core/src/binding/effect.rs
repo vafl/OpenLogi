@@ -266,13 +266,14 @@ impl Action {
             Action::VolumeDown => Effect::Media(MediaKey::VolumeDown),
             Action::MuteVolume => Effect::Media(MediaKey::Mute),
 
-            // DPI/SmartShift/the Actions Ring/OpenApplication are all handled
+            // DPI/SmartShift/the Actions Ring/OpenApplication/Highlight are all handled
             // above (or beside) the injector — see `Effect::AgentSide`.
             Action::CycleDpiPresets
             | Action::SetDpiPreset(_)
             | Action::ToggleSmartShift
             | Action::ShowActionsRing
-            | Action::OpenApplication(_) => Effect::AgentSide,
+            | Action::OpenApplication(_)
+            | Action::Highlight(_) => Effect::AgentSide,
 
             Action::ScrollUp => Effect::Scroll { dx: 0, dy: 1 },
             Action::ScrollDown => Effect::Scroll { dx: 0, dy: -1 },

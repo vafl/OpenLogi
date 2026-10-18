@@ -12,7 +12,10 @@ use std::rc::Rc;
 
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::slider::{SliderEvent, SliderState};
-use openlogi_core::config::{ThumbwheelSensitivity, VerticalScrollSensitivity};
+use openlogi_core::config::{
+    ForceThreshold, HighlightSensitivity, LaserSize, SpotlightDim, SpotlightSize,
+    ThumbwheelSensitivity, VerticalScrollSensitivity,
+};
 use openlogi_core::hid::{Dpi, SmartShiftThreshold, TunableTorque};
 
 /// A value a slider thumb can rest on.
@@ -93,6 +96,34 @@ rounded_slider_unit!(
     ThumbwheelSensitivity,
     TunableTorque,
     VerticalScrollSensitivity,
+);
+
+/// Range-checked newtypes over an integer: a thumb position is rounded as the
+/// raw integer is, then pulled into the type's own `MIN..=MAX`.
+macro_rules! bounded_slider_unit {
+    ($($unit:ty => $raw:ty),+ $(,)?) => {$(
+        impl SliderUnit for $unit {
+            fn to_slider(self) -> f32 {
+                f32::from(self.into_inner())
+            }
+
+            fn from_slider(raw: f32) -> Self {
+                let raw = raw.clamp(
+                    f32::from(Self::MIN.into_inner()),
+                    f32::from(Self::MAX.into_inner()),
+                );
+                Self::try_new(<$raw as SliderUnit>::from_slider(raw)).unwrap_or(Self::MIN)
+            }
+        }
+    )+};
+}
+
+bounded_slider_unit!(
+    ForceThreshold => u16,
+    LaserSize => u16,
+    SpotlightSize => u16,
+    SpotlightDim => u8,
+    HighlightSensitivity => u8,
 );
 
 /// The bounds and step of one slider.
@@ -337,6 +368,31 @@ mod tests {
                 "{a}..{b}"
             );
         }
+    }
+
+    /// The range-checked domain values round a thumb position like the raw
+    /// integer, pull it into their own bounds, and fall back to the minimum
+    /// for a position that is no number at all.
+    #[test]
+    fn a_bounded_unit_rounds_clamps_and_falls_back_to_its_minimum() {
+        use openlogi_core::config::{ForceThreshold, SpotlightDim};
+
+        use super::SliderUnit as _;
+
+        let min = ForceThreshold::MIN;
+        let max = ForceThreshold::MAX;
+        assert_eq!(ForceThreshold::from_slider(min.to_slider() - 50.), min);
+        assert_eq!(ForceThreshold::from_slider(max.to_slider() + 50.), max);
+        assert_eq!(
+            ForceThreshold::from_slider(min.to_slider() + 0.6).to_slider(),
+            min.to_slider() + 1.
+        );
+        assert_eq!(ForceThreshold::from_slider(f32::NAN), min);
+        assert_eq!(
+            SpotlightDim::from_slider(1000.),
+            SpotlightDim::MAX,
+            "also through the u8 flavour"
+        );
     }
 
     #[test]

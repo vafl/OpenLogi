@@ -19,9 +19,9 @@ use openlogi_fixture::{
 use openlogi_ipc::client::ProtocolSkew;
 use openlogi_ipc::{
     ActionRingCommandError, ActionRingInvocation, Agent, AgentStatus, BacklightObservation,
-    ClientKind, ConfigReloadError, ForegroundApps, Generation, Identity, InventoryHealth,
-    MonitorEvent, Observation, PROTOCOL_VERSION, PairingCommandError, PairingFailure, PairingPhase,
-    PairingUpdate, RingObservation, SavedConfig,
+    ClientKind, ConfigReloadError, ForegroundApps, Generation, HighlightObservation, Identity,
+    InventoryHealth, MonitorEvent, Observation, PROTOCOL_VERSION, PairingCommandError,
+    PairingFailure, PairingPhase, PairingUpdate, RingObservation, SavedConfig,
 };
 use tarpc::client::RpcError;
 use tarpc::context::Context as TarpcContext;
@@ -309,6 +309,18 @@ impl Agent for TestAgent {
 
     async fn observe_action_ring(self, _: TarpcContext, _since: Generation) -> RingObservation {
         unreachable!("profile capture must not inspect the Actions Ring")
+    }
+
+    async fn highlight_released(self, _: TarpcContext, _: u64, _: f64, _: f64) {
+        unreachable!("profile capture must not move the pointer")
+    }
+
+    async fn highlight_moved(self, _: TarpcContext, _: u64, _: f64, _: f64) {
+        unreachable!("profile capture must not move the pointer")
+    }
+
+    async fn observe_highlight(self, _: TarpcContext, _since: Generation) -> HighlightObservation {
+        unreachable!("profile capture must not inspect the presenter highlight")
     }
 
     async fn declare_client(self, _: TarpcContext, kind: ClientKind) {

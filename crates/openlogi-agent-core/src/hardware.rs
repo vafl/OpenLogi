@@ -23,11 +23,11 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use openlogi_core::config::Lighting;
+use openlogi_core::config::{Lighting, PresenterSettings};
 use openlogi_hid::{
     CaptureChannelSlot, ChannelRegistry, DeviceIoGate, DeviceRoute, Dpi, HidppOperation, HostOs,
     OsLayoutOutcome, ReportRate, ScrollResolution, SharedChannel, SmartShiftStatus,
-    WeakSharedChannel, WriteError,
+    ThresholdsApplied, WeakSharedChannel, WriteError,
 };
 use tokio::time::error::Elapsed;
 use tracing::{debug, info, warn};
@@ -1004,6 +1004,96 @@ fn log_wheel_result(
     });
 }
 
+/// Whether a presenter attempt failed in a way worth one more pass: it timed
+/// out, or the level mode did not read back as written (the device layer
+/// already re-read it once). Unsupported features, a missing device, refused
+/// thresholds and the like are final.
+fn presenter_attempt_is_transient<T>(attempt: &Result<Result<T, WriteError>, Elapsed>) -> bool {
+    matches!(
+        attempt,
+        Err(_)
+            | Ok(Err(
+                WriteError::RequestTimedOut { .. } | WriteError::ForceLevelModeNotApplied { .. }
+            ))
+    )
+}
+
+/// Spawn an OS thread that configures `op`'s presenter through
+/// [`openlogi_hid::apply_presenter_settings_on`]: both-levels reporting on its
+/// force-sensing button, the configured thresholds and enabled haptics, each
+/// written only when the device differs. A device without the force-sensing
+/// button is left untouched, and everything short of a failed HID++ exchange
+/// logs at `debug`.
+///
+/// The first apply after a connect runs while the capture session arms the
+/// same device over the same channel; once that left a reply unanswered for
+/// the whole budget, and the arming stalled with it. The pass is idempotent
+/// (it reads before it writes), so a timed-out attempt, or one whose level mode
+/// still did not read back as written after the device layer's own delayed
+/// re-read ([`presenter_attempt_is_transient`]), is retried once; only a
+/// second failure warns.
+pub(crate) fn apply_presenter_in_background(op: DeviceOp, settings: PresenterSettings) {
+    let index = op.route.device_index();
+    let turn = op.access.transport_turns.turn_for(&op.route);
+    op.spawn_timed_write(
+        "presenter settings",
+        move |op| async move {
+            let attempt = || {
+                timed_on_current_channel(&op, &turn, |c| async move {
+                    openlogi_hid::apply_presenter_settings_on(&c, settings).await
+                })
+            };
+            let first = attempt().await;
+            if presenter_attempt_is_transient(&first) {
+                debug!(index, ?first, "presenter settings failed, retrying once");
+                attempt().await
+            } else {
+                first
+            }
+        },
+        move |result| match result {
+            Ok(Err(WriteError::FeatureUnsupported { feature_hex })) => {
+                debug!(
+                    index,
+                    feature = format_args!("{feature_hex:#06x}"),
+                    "presenter settings skipped: no force-sensing button"
+                );
+            }
+            result => log_outcome(index, "presenter settings", result, |applied| {
+                if let Err(error) = &applied.haptics {
+                    warn!(index, ?error, "presenter haptics failed");
+                }
+                match applied.thresholds {
+                    ThresholdsApplied::OutOfRange { min, max } => warn!(
+                        index,
+                        min,
+                        max,
+                        "presenter force thresholds outside the device range — not applied"
+                    ),
+                    ThresholdsApplied::NotChangeable => {
+                        warn!(index, "presenter force thresholds are not changeable");
+                    }
+                    ThresholdsApplied::Inverted { touch, press } => warn!(
+                        index,
+                        touch,
+                        press,
+                        "presenter touch force is above press force — thresholds not applied"
+                    ),
+                    ThresholdsApplied::Unchanged | ThresholdsApplied::Written => {}
+                }
+                debug!(
+                    index,
+                    ?settings,
+                    level_mode = ?applied.level_mode,
+                    thresholds = ?applied.thresholds,
+                    haptics = ?applied.haptics,
+                    "presenter settings applied"
+                );
+            }),
+        },
+    );
+}
+
 /// Spawn an OS thread that writes `dpi` to `op`'s device via its current
 /// shared channel. Returns immediately; failures are logged.
 pub fn write_dpi_in_background(op: DeviceOp, dpi: Dpi) {
@@ -1599,9 +1689,10 @@ mod tests {
                 .expect("fixture is a physical key"),
             "mouse",
             route.clone(),
-            None,
-            0,
-            true,
+            crate::capture_plan::PlanContext {
+                os_mouse_hook_available: true,
+                ..Default::default()
+            },
         );
         plan.target.spec.divert_main_wheel =
             divert.then(openlogi_hid::session::gesture::MainWheelDivert::default);
@@ -1888,6 +1979,45 @@ mod tests {
         })
         .await
         .expect("the reapply thread reaches the transport queue");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn presenter_retries_timeouts_and_unapplied_level_modes_only() {
+        let elapsed = tokio::time::timeout(Duration::from_millis(1), std::future::pending::<()>())
+            .await
+            .expect_err("a pending future times out");
+        assert!(presenter_attempt_is_transient::<()>(&Err(elapsed)));
+        assert!(presenter_attempt_is_transient::<()>(&Ok(Err(
+            WriteError::ForceLevelModeNotApplied {
+                requested: 0x03,
+                actual: 0x01
+            }
+        ))));
+        assert!(presenter_attempt_is_transient::<()>(&Ok(Err(
+            WriteError::RequestTimedOut {
+                operation: HidppOperation::WriteDpi
+            }
+        ))));
+        assert!(!presenter_attempt_is_transient::<()>(&Ok(Err(
+            WriteError::Hidpp("any other protocol error".into())
+        ))));
+        assert!(!presenter_attempt_is_transient::<()>(&Ok(Err(
+            WriteError::ForceThresholdsNotApplied {
+                requested_touch: 1,
+                requested_press: 2,
+                actual_touch: 3,
+                actual_press: 4
+            }
+        ))));
+        assert!(!presenter_attempt_is_transient::<()>(&Ok(Err(
+            WriteError::FeatureUnsupported {
+                feature_hex: 0x19c0
+            }
+        ))));
+        assert!(!presenter_attempt_is_transient::<()>(&Ok(Err(
+            WriteError::DeviceNotFound
+        ))));
+        assert!(!presenter_attempt_is_transient(&Ok(Ok(()))));
     }
 
     /// The timeout every [`DeviceOp::run`] call relies on: a write that never
