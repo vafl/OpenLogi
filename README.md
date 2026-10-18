@@ -68,6 +68,11 @@ Things OpenLogi does that Options+ won't:
 - SmartShift wheel: mode toggle, sensitivity, and a permanent-ratchet panel (`0x2111`)
 - Per-device native scroll inversion (`0x2121`, supported devices)
 
+**Presenter**
+
+- Logitech Spotlight 2 highlight: a light touch of the force-sensing button shows a laser dot, a firm press a spotlight, and the pointer stays hidden until the mouse moves (or, set to follow, lands where the dot was) (`0x19c0`; macOS-only for now: elsewhere the button keeps its native behaviour and nothing is written to the device)
+- Per-device force thresholds, haptic click and highlight look/motion (`[devices.<key>.presenter]`)
+
 **Keyboard**
 
 - Global F-key remapping: the same action catalog as the mouse, plus power-user actions — typed text, key combos, multi-step workflows (macOS + Windows)

@@ -91,13 +91,14 @@ impl DeviceKind {
     }
 }
 
-/// Whether this host can show a presenter highlight. No host renders the
-/// highlight yet (the overlay has no highlight window), so this is `false`
-/// everywhere. The one owner of that fact: the capture plan leaves the
-/// presenter controls native where it is `false` and the agent writes no
-/// presenter settings to the device. [`Capabilities::presenter_highlight`]
+/// Whether this host can show a presenter highlight: the overlay's
+/// click-through highlight window, moving the pointer to the dot and hiding it
+/// are implemented on macOS only. The one owner of that fact: the capture plan
+/// leaves the presenter controls native where it is `false`, the agent writes
+/// no presenter settings to the device, the overlay opens no window and the
+/// settings app shows no Presenter tab. [`Capabilities::presenter_highlight`]
 /// stays a device fact and is published regardless.
-pub const HIGHLIGHT_OVERLAY_SUPPORTED: bool = false;
+pub const HIGHLIGHT_OVERLAY_SUPPORTED: bool = cfg!(target_os = "macos");
 
 /// What a device can be *configured* to do, derived from the HID++ feature
 /// table it reports (feature `0x0001`). This is the source of truth for which

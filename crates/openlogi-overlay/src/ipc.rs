@@ -7,6 +7,11 @@
 //! newer command for the same ring supersedes a stalled one rather than
 //! queueing behind it, which is what keeps the ring responsive when the agent
 //! is briefly slow.
+//!
+//! The ring and the highlight each get their own delivery worker
+//! ([`Family`]): a family's commands supersede each other, but never a
+//! command of the other family, so a ring hover cannot drop a highlight
+//! release nor a release a ring activation.
 
 use std::{
     future::Future,
@@ -16,9 +21,9 @@ use std::{
 
 use openlogi_core::action_ring::DISPLAY_LIFETIME;
 use openlogi_core::binding::ActionRingSlot;
-use openlogi_ipc::client::{self, ConnectError, Observer};
+use openlogi_ipc::client::{self, ConnectError, Observer, Stamped};
 use openlogi_ipc::{
-    ActionRingInvocation, AgentClient, BacklightObservation, ClientKind, RingObservation,
+    ActionRingInvocation, AgentClient, BacklightObservation, ClientKind, HighlightObservation,
 };
 use succession::Standing;
 use tarpc::context;
@@ -27,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::session::allegiance;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum OverlayCommand {
     Hover {
         session_id: u64,
@@ -40,11 +45,44 @@ pub(crate) enum OverlayCommand {
     Cancel {
         session_id: u64,
     },
+    /// Highlight `session_id` ended with its dot at `(x, y)`, in global
+    /// top-left-origin points; the agent moves the pointer there.
+    HighlightReleased {
+        session_id: u64,
+        x: f64,
+        y: f64,
+    },
+    /// Highlight `session_id` is at `(x, y)` right now, in the same space;
+    /// the agent warps the pointer there while the session is active. Not
+    /// terminal: a move is sent once and never retried.
+    HighlightMoved {
+        session_id: u64,
+        x: f64,
+        y: f64,
+    },
+}
+
+/// The independent stream a command belongs to. Commands of one family
+/// supersede each other; commands of different families never do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Family {
+    Ring,
+    Highlight,
 }
 
 impl OverlayCommand {
+    const fn family(self) -> Family {
+        match self {
+            Self::Hover { .. } | Self::Activate { .. } | Self::Cancel { .. } => Family::Ring,
+            Self::HighlightReleased { .. } | Self::HighlightMoved { .. } => Family::Highlight,
+        }
+    }
+
     pub(crate) const fn is_terminal(self) -> bool {
-        matches!(self, Self::Activate { .. } | Self::Cancel { .. })
+        matches!(
+            self,
+            Self::Activate { .. } | Self::Cancel { .. } | Self::HighlightReleased { .. }
+        )
     }
 }
 
@@ -56,6 +94,8 @@ pub(crate) struct Handle {
     pub(crate) invocations: mpsc::UnboundedReceiver<Option<ActionRingInvocation>>,
     /// Transient keyboard-backlight indicator state.
     pub(crate) backlights: mpsc::UnboundedReceiver<BacklightObservation>,
+    /// Every highlight observation, plus a hidden one on disconnect.
+    pub(crate) highlights: mpsc::UnboundedReceiver<HighlightUpdate>,
     /// Where the view reports hover, activation, and cancellation.
     pub(crate) commands: mpsc::UnboundedSender<OverlayCommand>,
 }
@@ -65,12 +105,14 @@ pub(crate) struct Handle {
 pub(crate) fn spawn() -> Handle {
     let (invocation_tx, invocations) = mpsc::unbounded_channel();
     let (backlight_tx, backlights) = mpsc::unbounded_channel();
+    let (highlight_tx, highlights) = mpsc::unbounded_channel();
     let (commands, mut command_rx) = mpsc::unbounded_channel();
     let started = openlogi_core::worker::spawn("openlogi-overlay-ipc", move |runtime| {
         runtime.block_on(async {
             tokio::join!(
                 observe_invocations(invocation_tx),
                 observe_backlights(backlight_tx),
+                observe_highlights(highlight_tx),
                 send_commands(&mut command_rx)
             );
         });
@@ -81,36 +123,8 @@ pub(crate) fn spawn() -> Handle {
     Handle {
         invocations,
         backlights,
+        highlights,
         commands,
-    }
-}
-
-async fn observe_backlights(tx: mpsc::UnboundedSender<BacklightObservation>) {
-    loop {
-        let Some(client) = connect().await else {
-            tokio::time::sleep(RETRY_PERIOD).await;
-            continue;
-        };
-        let mut observer = Observer::backlight(client);
-        loop {
-            match observer.next().await {
-                Ok(Some(observation)) => {
-                    if tx.send(observation).is_err() {
-                        return;
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    debug!(?error, "backlight observation channel disconnected");
-                    // The expiry timer lives in the agent, so a lost agent can
-                    // never send the hide that closes a visible indicator.
-                    if tx.send(agent_lost()).is_err() {
-                        return;
-                    }
-                    break;
-                }
-            }
-        }
     }
 }
 
@@ -176,18 +190,18 @@ const GIVE_UP_AFTER: Duration = Duration::from_mins(1);
 /// How long to wait between attempts to reach an agent.
 const RETRY_PERIOD: Duration = Duration::from_secs(1);
 
-/// The connection that carries invocations: its phase, and the state
-/// meaningful within each phase.
+/// One observe connection: its phase, and the state meaningful within each
+/// phase.
 ///
 /// A successful connection owns its [`Observer`], and with it the generation
 /// cursor; a reconnect episode owns its give-up clock. Transitioning between
 /// them resets the fact from the previous phase by construction.
-enum InvocationLink {
+enum ObserveLink<T: Stamped> {
     Reconnecting { unreachable_since: Option<Instant> },
-    Observing(Observer<RingObservation>),
+    Observing(Observer<T>),
 }
 
-impl Default for InvocationLink {
+impl<T: Stamped> Default for ObserveLink<T> {
     fn default() -> Self {
         Self::Reconnecting {
             unreachable_since: None,
@@ -195,9 +209,9 @@ impl Default for InvocationLink {
     }
 }
 
-impl InvocationLink {
-    fn connected(&mut self, client: AgentClient) {
-        *self = Self::Observing(Observer::action_ring(client));
+impl<T: Stamped> ObserveLink<T> {
+    fn connected(&mut self, observer: Observer<T>) {
+        *self = Self::Observing(observer);
     }
 
     fn connect_failed(&mut self, now: Instant) -> bool {
@@ -215,16 +229,35 @@ impl InvocationLink {
     }
 }
 
-async fn observe_invocations(tx: mpsc::UnboundedSender<Option<ActionRingInvocation>>) {
-    let mut link = InvocationLink::default();
+/// What an observe loop hands its consumer.
+enum Observed<T> {
+    /// A fresh answer from the agent.
+    Answer(T),
+    /// An established connection dropped. The agent's own timers die with
+    /// it, so a consumer holding something only the agent can end must let
+    /// go of it.
+    Lost,
+}
+
+/// Keep one observe connection alive, handing every answer and every lost
+/// connection to `deliver`, which returns `false` once nobody listens any
+/// more.
+///
+/// All observe loops share this, so they share the connect, stand-down and
+/// give-up policy.
+async fn observe<T: Stamped>(
+    arm: fn(AgentClient) -> Observer<T>,
+    mut deliver: impl FnMut(Observed<T>) -> bool,
+) {
+    let mut link = ObserveLink::<T>::default();
     loop {
-        if matches!(&link, InvocationLink::Reconnecting { .. }) {
+        if matches!(&link, ObserveLink::Reconnecting { .. }) {
             if let Some(client) = connect().await {
                 // Generation 0 says "I have seen nothing", so the first
                 // answer is whatever is showing right now. A replacement
                 // agent numbers its own generations, so every connection
                 // starts there independently.
-                link.connected(client);
+                link.connected(arm(client));
             } else {
                 if link.connect_failed(Instant::now()) {
                     stand_down(&format!("no agent has answered for {GIVE_UP_AFTER:?}"));
@@ -233,35 +266,99 @@ async fn observe_invocations(tx: mpsc::UnboundedSender<Option<ActionRingInvocati
                 continue;
             }
         }
-        let InvocationLink::Observing(observer) = &mut link else {
+        let ObserveLink::Observing(observer) = &mut link else {
             continue;
         };
         match observer.next().await {
             // The hold elapsing with nothing new, or a stale reply: still
             // alive, nothing to show.
             Ok(None) => {}
-            Ok(Some(ring)) => {
-                if tx.send(ring.invocation).is_err() {
+            Ok(Some(answer)) => {
+                if !deliver(Observed::Answer(answer)) {
                     return;
                 }
             }
             Err(error) => {
-                debug!(?error, "Actions Ring state channel disconnected");
+                debug!(?error, "observe channel disconnected");
                 link.disconnected();
+                if !deliver(Observed::Lost) {
+                    return;
+                }
             }
         }
     }
 }
 
-/// Fold a newly-produced command into the one still waiting to be sent.
+async fn observe_invocations(tx: mpsc::UnboundedSender<Option<ActionRingInvocation>>) {
+    observe(Observer::action_ring, |observed| match observed {
+        Observed::Answer(ring) => tx.send(ring.invocation).is_ok(),
+        // The ring's own session deadline closes it.
+        Observed::Lost => true,
+    })
+    .await;
+}
+
+async fn observe_backlights(tx: mpsc::UnboundedSender<BacklightObservation>) {
+    observe(Observer::backlight, |observed| {
+        tx.send(match observed {
+            Observed::Answer(observation) => observation,
+            // The expiry timer lives in the agent, so a lost agent can never
+            // send the hide that closes a visible indicator.
+            Observed::Lost => agent_lost(),
+        })
+        .is_ok()
+    })
+    .await;
+}
+
+/// Every highlight observation, and [`HighlightUpdate::Disconnected`] when
+/// the agent goes away.
+async fn observe_highlights(tx: mpsc::UnboundedSender<HighlightUpdate>) {
+    observe(Observer::highlight, |observed| {
+        tx.send(match observed {
+            Observed::Answer(highlight) => HighlightUpdate::Observed(highlight),
+            Observed::Lost => HighlightUpdate::Disconnected,
+        })
+        .is_ok()
+    })
+    .await;
+}
+
+/// What the highlight loop hands the view: the agent's latest observation,
+/// or the news that the agent is gone. The second is its own variant rather
+/// than a sentinel observation, because whether an answer is new is the
+/// [`Observer`]'s call alone — nothing here inspects a generation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HighlightUpdate {
+    /// The agent's current highlight state.
+    Observed(HighlightObservation),
+    /// The agent went away: a held highlight must not stay on screen for an
+    /// agent that can no longer say the button was released.
+    Disconnected,
+}
+
+/// Fold a newly-produced command into the one still waiting to be sent. Both
+/// are of the same [`Family`]: the families are delivered by separate workers
+/// and never meet here.
 ///
 /// A hover is dropped once its own session has already been activated or
 /// cancelled — the buzz would be for a ring that is closing. It must be the
 /// *same* session though: rings open back to back, and the view only emits a
 /// hover when the hovered slot changes, so swallowing the new ring's first
 /// hover loses it for as long as the pointer stays where it is.
+///
+/// A running highlight position report is superseded by any newer command but
+/// never displaces the release still being delivered: the release is
+/// terminal and retried, a move is not. A newer release does replace an older
+/// one still waiting, even though a release is terminal: sessions end in
+/// order and the pointer ends where the last one left its dot, so delivering
+/// the older position first would only be overwritten.
 fn coalesce_command(current: OverlayCommand, next: OverlayCommand) -> OverlayCommand {
+    debug_assert_eq!(current.family(), next.family());
     match (next, current) {
+        (OverlayCommand::HighlightMoved { .. }, OverlayCommand::HighlightReleased { .. }) => {
+            current
+        }
         (
             OverlayCommand::Hover { session_id, .. },
             OverlayCommand::Activate {
@@ -292,16 +389,53 @@ async fn send_command(client: &AgentClient, command: OverlayCommand) -> bool {
         OverlayCommand::Cancel { session_id } => {
             client.action_ring_cancel(ctx, session_id).await.is_ok()
         }
+        OverlayCommand::HighlightReleased { session_id, x, y } => client
+            .highlight_released(ctx, session_id, x, y)
+            .await
+            .is_ok(),
+        OverlayCommand::HighlightMoved { session_id, x, y } => {
+            client.highlight_moved(ctx, session_id, x, y).await.is_ok()
+        }
     }
 }
 
 async fn send_commands(rx: &mut mpsc::UnboundedReceiver<OverlayCommand>) {
-    send_commands_with(
+    send_commands_by_family(
         rx,
         || Box::pin(connect()),
         |client, command| Box::pin(send_command(client, command)),
     )
     .await;
+}
+
+/// Deliver commands with one [`send_commands_with`] worker per [`Family`], so
+/// the single pending command each worker holds can only be displaced by its
+/// own family. Returns once `rx` is closed and both workers have stopped.
+async fn send_commands_by_family<C>(
+    rx: &mut mpsc::UnboundedReceiver<OverlayCommand>,
+    connect_client: impl FnMut() -> CommandFuture<'static, Option<C>> + Clone,
+    send: impl for<'a> FnMut(&'a C, OverlayCommand) -> CommandFuture<'a, bool> + Clone,
+) {
+    let (ring_tx, mut ring_rx) = mpsc::unbounded_channel();
+    let (highlight_tx, mut highlight_rx) = mpsc::unbounded_channel();
+    let route = async {
+        while let Some(command) = rx.recv().await {
+            let target = match command.family() {
+                Family::Ring => &ring_tx,
+                Family::Highlight => &highlight_tx,
+            };
+            // A worker only stops once its channel closes, so a failed send
+            // cannot happen while the router runs.
+            let _ = target.send(command);
+        }
+        // Closing both channels is what stops the workers.
+        drop((ring_tx, highlight_tx));
+    };
+    tokio::join!(
+        route,
+        send_commands_with(&mut ring_rx, connect_client.clone(), send.clone()),
+        send_commands_with(&mut highlight_rx, connect_client, send),
+    );
 }
 
 async fn send_commands_with<C>(
