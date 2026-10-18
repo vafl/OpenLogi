@@ -842,3 +842,17 @@ fn mouse_buttons_sort_ahead_of_every_keyboard_control() {
     }
     assert_eq!(default_binding(ButtonId::control(0x01f3)), Action::None);
 }
+
+// ── Presenter highlight ───────────────────────────────────────────────────
+
+#[test]
+fn presenter_buttons_agree_with_the_presenter_predicate() {
+    for button in ButtonId::ALL.into_iter().chain(ButtonId::PRESENTER) {
+        assert_eq!(
+            button.is_presenter_button(),
+            ButtonId::PRESENTER.contains(&button),
+            "{button:?}"
+        );
+    }
+    assert!(ButtonId::PRESENTER.iter().all(|b| b.is_presenter_button()));
+}

@@ -422,7 +422,7 @@ fn default_true() -> bool {
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if requires a fn(&T) -> bool signature"
 )]
-fn is_true(b: &bool) -> bool {
+pub(super) fn is_true(b: &bool) -> bool {
     *b
 }
 

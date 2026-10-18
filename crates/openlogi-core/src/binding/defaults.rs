@@ -28,7 +28,10 @@ use super::value::Binding;
 #[must_use]
 pub fn default_binding(button: ButtonId) -> Action {
     match button {
-        ButtonId::LeftClick => Action::LeftClick,
+        // The presenter's short click shares the default: there `LeftClick`
+        // is the "leave the firmware's native left click" marker, not a
+        // synthesised click (see `capture_plan`).
+        ButtonId::LeftClick | ButtonId::PresenterClick => Action::LeftClick,
         ButtonId::RightClick => Action::RightClick,
         ButtonId::MiddleClick => Action::MiddleClick,
         // The main wheel's tilt scrolls horizontally in firmware. Seeding each
@@ -74,7 +77,8 @@ pub fn default_binding(button: ButtonId) -> Action {
         // Keyboard keys stay on their native firmware function until the user
         // explicitly binds them; an unbound key is never diverted, so a
         // `None` default keeps the projection total without capturing anything.
-        ButtonId::Control(_) => Action::None,
+        // Nothing is bound to the presenter's two force levels yet either.
+        ButtonId::Control(_) | ButtonId::PresenterTouch | ButtonId::PresenterPress => Action::None,
     }
 }
 

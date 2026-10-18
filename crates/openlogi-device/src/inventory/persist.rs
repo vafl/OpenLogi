@@ -48,7 +48,9 @@ use super::features::{BatteryProbe, ProbedFeatures};
 /// v11 adds the `Capabilities::easy_switch` flag (`0x1815` host slots).
 /// v12 adds the `Capabilities::virtual_thumbwheel` flag (Back/Forward
 /// raw-wheel reporting).
-const SCHEMA_VERSION: u32 = 12;
+/// v13 adds the `Capabilities::presenter_highlight` flag (`0x19c0` force button
+/// on a presenter with the `0x00d8` touch control).
+const SCHEMA_VERSION: u32 = 13;
 
 impl ProbeCacheError {
     /// Report why a store could not keep a snapshot.

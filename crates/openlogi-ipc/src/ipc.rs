@@ -112,7 +112,11 @@ pub use succession::Identity;
 ///      control's value, or the user chose that control. A file at another
 ///      revision loads as a plain reload. `Agent::observe_backlight`
 ///      appended — the level a keyboard's backlight keys set, for the
-///      overlay's transient indicator.
+///      overlay's transient indicator. The Spotlight 2 highlight appended:
+///      `ButtonId::{PresenterTouch, PresenterPress, PresenterClick}`,
+///      `Capabilities::presenter_highlight`,
+///      `HidppOperation::ConfigurePresenter` and
+///      `WriteError::{ForceLevelModeNotApplied, ForceThresholdsNotApplied}`.
 pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Environment variable through which the agent hands a supervised helper the

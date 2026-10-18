@@ -37,6 +37,9 @@ pub(super) struct ArmedControls {
     /// Raw-XY-capable additional CIDs diverted as gesture sources (side
     /// buttons on supported desktops and a gesture-mode DPI/ModeShift button).
     pub(super) gesture_button_cids: Vec<(u16, ButtonId)>,
+    /// Presenter CIDs diverted (raw-XY where supported, else plain), with the
+    /// [`ButtonId`] each dispatches as.
+    pub(super) presenter_cids: Vec<(u16, ButtonId)>,
     /// DPI/ModeShift CIDs diverted as plain buttons when gesture mode is off.
     pub(super) dpi_cids: Vec<u16>,
     /// Standard-button CIDs diverted per the session's [`CaptureSpec`], with
@@ -91,6 +94,16 @@ impl ArmedControls {
         Some(CapturedInput::ThumbwheelDirection {
             positive_is_forward,
         })
+    }
+
+    /// Whether this session already armed `cid` as a gesture or presenter
+    /// source. Such a control keeps its owner's reporting (raw-XY, or plain
+    /// for a presenter source without raw-XY): a second plain divert would
+    /// strip it and record a second restore.
+    fn is_armed_source(&self, cid: u16) -> bool {
+        self.gesture_cids.contains(&cid)
+            || self.presenter_cids.iter().any(|&(c, _)| c == cid)
+            || self.gesture_button_cids.iter().any(|&(c, _)| c == cid)
     }
 
     /// Convert all armed firmware state into the one capability that can
@@ -169,6 +182,7 @@ pub(super) async fn arm_controls(
     }
     if armed.gesture_cids.is_empty()
         && armed.gesture_button_cids.is_empty()
+        && armed.presenter_cids.is_empty()
         && armed.dpi_cids.is_empty()
         && armed.button_cids.is_empty()
         && armed.wheel_button_cids.is_empty()
@@ -221,6 +235,7 @@ pub(super) async fn arm_controls_into(
                 armed.gesture_button_cids.push((cid, button));
             }
         }
+        arm_presenter_sources(&rc, &controls, spec, armed).await?;
         for &cid in &reprog_controls::DPI_MODE_SHIFT_CIDS {
             let gesture_requested = spec
                 .divert_gesture_buttons
@@ -242,12 +257,7 @@ pub(super) async fn arm_controls_into(
             // The plan never lists a raw-XY-diverted gesture source, but
             // guard anyway: a plain (divert, no raw-XY) write here would strip
             // the raw-XY reporting armed above.
-            if armed.gesture_cids.contains(&cid)
-                || armed
-                    .gesture_button_cids
-                    .iter()
-                    .any(|&(gesture_cid, _)| gesture_cid == cid)
-            {
+            if armed.is_armed_source(cid) {
                 continue;
             }
             if controls.iter().any(|c| c.cid == cid && c.is_divertable()) {
@@ -305,6 +315,78 @@ pub(super) async fn arm_controls_into(
     {
         arm_main_wheel(chan, slot, info.index, requested, armed).await?;
     }
+    Ok(())
+}
+
+/// Divert each presenter source the device exposes: with raw-XY when the
+/// control reports it, else as a plain press so its edges still arrive.
+/// Also hands a stale-diverted short click back to native when the spec keeps
+/// it native.
+async fn arm_presenter_sources(
+    rc: &ReprogControlsV4,
+    controls: &[reprog_controls::CtrlIdInfo],
+    spec: &CaptureSpec,
+    armed: &mut ArmedControls,
+) -> Result<(), CaptureError> {
+    if spec.presenter_click_native
+        && let Err(error) = release_stale_presenter_click(rc, controls).await
+    {
+        // A repair of what Options+ left behind must not cost the session its
+        // own controls.
+        warn!(%error, "could not hand a stale presenter click back to native — arming anyway");
+    }
+    for &(cid, button) in &spec.divert_presenter_sources {
+        let Some(control) = controls.iter().find(|c| c.cid == cid && c.is_divertable()) else {
+            continue;
+        };
+        let divert = if control.supports_raw_xy() {
+            PointerDivert::RawXy
+        } else {
+            debug!(
+                cid,
+                "presenter control lacks raw-XY — armed as a plain press"
+            );
+            PointerDivert::Plain
+        };
+        arm_reprog_control(rc, cid, divert, &mut armed.reporting).await?;
+        armed.presenter_cids.push((cid, button));
+    }
+    Ok(())
+}
+
+/// Hand the presenter's short click back to the firmware when it is found
+/// diverted. Logi Options+ leaves it diverted when it exits uncleanly, and a
+/// diverted click reports nothing to the host, so the button would be dead.
+/// Observed on a Spotlight 2 after Options+ was killed: `0x0050` read back
+/// diverted and the button's click did nothing until it was handed back.
+///
+/// Only a plan for a presenter asks for this ([`CaptureSpec::presenter_click_native`]):
+/// on any other device `0x0050` is an ordinary mouse button this session has no
+/// business rewriting. The write is deliberately not recorded in the session's
+/// restore set; it is a one-time repair, not a divert this session owns.
+async fn release_stale_presenter_click(
+    rc: &ReprogControlsV4,
+    controls: &[reprog_controls::CtrlIdInfo],
+) -> Result<(), CaptureError> {
+    let cid = reprog_controls::PRESENTER_CLICK_CID;
+    if !controls.iter().any(|c| c.cid == cid) {
+        return Ok(());
+    }
+    if !rc.get_cid_reporting(cid).await?.diverted {
+        return Ok(());
+    }
+    debug!(
+        cid = format_args!("{cid:#06x}"),
+        "presenter click was left diverted (Logi Options+ exits uncleanly) — handing it back to native"
+    );
+    rc.set_cid_reporting_full(
+        cid,
+        reprog_controls::CidReportingChange {
+            diverted: Some(false),
+            ..Default::default()
+        },
+    )
+    .await?;
     Ok(())
 }
 

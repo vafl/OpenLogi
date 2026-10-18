@@ -167,6 +167,14 @@ pub struct Capabilities {
     /// persisted identity.
     #[serde(default)]
     pub virtual_thumbwheel: bool,
+    /// The device is a presenter whose force-sensing highlight button can be
+    /// configured and bound — HID++ `0x19c0 ForceSensingButton` plus a
+    /// divertable raw-XY touch control (CID `0x00d8`) in the `0x1b04` control
+    /// table. The `0x19c0` feature alone is not enough: the MX Master 4 has it
+    /// too, without that control. Appended: crosses the IPC and the persisted
+    /// identity.
+    #[serde(default)]
+    pub presenter_highlight: bool,
 }
 
 impl Capabilities {
@@ -201,6 +209,9 @@ impl Capabilities {
             // Set by the `0x1b04` control walk; the feature table alone
             // cannot say which controls report raw wheel.
             virtual_thumbwheel: false,
+            // Set by the `0x1b04` control walk together with `0x19c0`; the
+            // feature table alone cannot tell a presenter from an MX Master 4.
+            presenter_highlight: false,
         }
     }
 
@@ -592,6 +603,7 @@ mod tests {
                     backlight: false,
                     easy_switch: false,
                     virtual_thumbwheel: false,
+                    presenter_highlight: false,
                 }),
                 settings_revision: 0,
             }],
@@ -710,8 +722,10 @@ mod tests {
                 backlight: false,
                 easy_switch: false,
                 virtual_thumbwheel: false,
+                presenter_highlight: false,
             }
         );
+        assert!(!Capabilities::from_feature_ids(&[0x0003, 0x19c0]).presenter_highlight);
         assert!(!Capabilities::from_feature_ids(&[0x0003, 0x1b04]).thumbwheel);
         // A wired G-series keyboard: PerKeyLighting (0x8080), no DPI/buttons.
         let keyboard = Capabilities::from_feature_ids(&[0x0001, 0x8080]);
@@ -733,6 +747,7 @@ mod tests {
                 backlight: false,
                 easy_switch: false,
                 virtual_thumbwheel: false,
+                presenter_highlight: false,
             }
         );
         // No driving features → nothing offered.

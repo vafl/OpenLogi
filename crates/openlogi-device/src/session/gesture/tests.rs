@@ -17,6 +17,7 @@ use crate::{ChannelRegistry, DeviceRoute};
 
 mod accumulator;
 mod main_wheel;
+mod presenter;
 mod restore;
 mod session;
 mod thumb_wheel;

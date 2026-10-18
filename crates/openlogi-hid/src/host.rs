@@ -26,8 +26,9 @@ use openlogi_device::backlight::{BacklightChange, BacklightState};
 use openlogi_device::inventory::{Enumerator, InventoryError};
 use openlogi_device::pairing::PairingReceiver;
 use openlogi_device::write::{
-    self as device, Dpi, DpiInfo, FeatureEntry, FirmwareEntity, HapticWaveform, LightingMethod,
-    LitraModel, PointerScaling, ReprogControlEntry, ScrollResolution, ScrollWheelMode,
+    self as device, Dpi, DpiInfo, FeatureEntry, FirmwareEntity, ForceButtonConfig,
+    ForceButtonState, ForceLevelMode, HapticWaveform, LightingMethod, LitraModel, PointerScaling,
+    ReprogControlEntry, ScrollResolution, ScrollWheelMode,
 };
 use openlogi_device::{DeviceIoGate, DeviceIoSignal, DeviceRoute};
 
@@ -81,6 +82,31 @@ pub async fn set_pointer_scaling(
     scaling: PointerScaling,
 ) -> Result<PointerScaling, WriteError> {
     device::set_pointer_scaling(&*native_backend(), route, scaling).await
+}
+
+/// Read every force-sensing button (`0x19c0`) of the device `route` reaches.
+pub async fn read_force_buttons(route: &DeviceRoute) -> Result<Vec<ForceButtonState>, WriteError> {
+    device::read_force_buttons(&*native_backend(), route).await
+}
+
+/// Write both force thresholds of a button of the device `route` reaches and
+/// return the thresholds it reports afterwards.
+pub async fn set_force_thresholds(
+    route: &DeviceRoute,
+    button: u8,
+    thresholds: ForceButtonConfig,
+) -> Result<ForceButtonConfig, WriteError> {
+    device::set_force_thresholds(&*native_backend(), route, button, thresholds).await
+}
+
+/// Set which force levels a button of the device `route` reaches reports and
+/// return the mode it reports afterwards.
+pub async fn set_force_level_mode(
+    route: &DeviceRoute,
+    button: u8,
+    mode: ForceLevelMode,
+) -> Result<ForceLevelMode, WriteError> {
+    device::set_force_level_mode(&*native_backend(), route, button, mode).await
 }
 
 /// Read the SmartShift mode, threshold and torque of the device `route` reaches.

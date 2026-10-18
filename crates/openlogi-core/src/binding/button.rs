@@ -67,6 +67,19 @@ pub enum ButtonId {
     /// Logi metadata slot `SLOT_NAME_RIGHT_SCROLL_BUTTON`. Counterpart to
     /// [`ButtonId::WheelTiltLeft`].
     WheelTiltRight,
+    /// The Spotlight 2 presenter's top button at its first force level
+    /// ("touch") — `0x1b04` CID `0x00d8`, "Cursor Button Long Press"; the
+    /// device layer owns the presenter CIDs. Diverted with raw-XY, it reports
+    /// the presenter's motion while held; see [`ButtonId::PRESENTER`].
+    PresenterTouch,
+    /// The Spotlight 2 presenter's top button at its second force level
+    /// ("firm press"). Counterpart to [`ButtonId::PresenterTouch`].
+    PresenterPress,
+    /// The Spotlight 2 presenter's top button, short click (task "Left
+    /// Click"). Left on its firmware function (a mouse left click) by
+    /// default; see [`ButtonId::PRESENTER`] and `Action::LeftClick`, which
+    /// here means "leave it native".
+    PresenterClick,
     /// A keyboard key, by the HID++ `0x1b04` control it reports as. Diverted
     /// over HID++ while bound (the OS hook never sees these keys); left on its
     /// native firmware function otherwise.
@@ -97,6 +110,27 @@ impl ButtonId {
         ButtonId::GestureButton,
         ButtonId::HapticPanel,
     ];
+
+    /// The presenter highlight buttons, deliberately kept out of
+    /// [`ButtonId::ALL`].
+    ///
+    /// `ALL` feeds the GUI's mouse trigger lists and the gesture tables, none of
+    /// which may offer a presenter control.
+    pub const PRESENTER: [ButtonId; 3] = [
+        ButtonId::PresenterTouch,
+        ButtonId::PresenterPress,
+        ButtonId::PresenterClick,
+    ];
+
+    /// Whether this is one of the presenter's force-sensitive highlight
+    /// buttons ([`ButtonId::PRESENTER`]).
+    #[must_use]
+    pub const fn is_presenter_button(self) -> bool {
+        matches!(
+            self,
+            ButtonId::PresenterTouch | ButtonId::PresenterPress | ButtonId::PresenterClick
+        )
+    }
 
     /// The keyboard key bound to `0x1b04` control `cid`.
     #[must_use]
@@ -175,7 +209,7 @@ impl ButtonId {
     /// string form read this one table; `unit_name` is a match without a
     /// wildcard over the unit variants, so a new variant that is missing here
     /// fails to compile rather than failing to parse.
-    const UNIT_NAMES: [(ButtonId, &'static str); 13] = [
+    const UNIT_NAMES: [(ButtonId, &'static str); 16] = [
         (ButtonId::LeftClick, "LeftClick"),
         (ButtonId::RightClick, "RightClick"),
         (ButtonId::MiddleClick, "MiddleClick"),
@@ -189,6 +223,9 @@ impl ButtonId {
         (ButtonId::HapticPanel, "HapticPanel"),
         (ButtonId::WheelTiltLeft, "WheelTiltLeft"),
         (ButtonId::WheelTiltRight, "WheelTiltRight"),
+        (ButtonId::PresenterTouch, "PresenterTouch"),
+        (ButtonId::PresenterPress, "PresenterPress"),
+        (ButtonId::PresenterClick, "PresenterClick"),
     ];
 
     /// The name a mouse button is persisted under. Keyboard controls have no
@@ -208,6 +245,9 @@ impl ButtonId {
             ButtonId::HapticPanel => Self::UNIT_NAMES[10].1,
             ButtonId::WheelTiltLeft => Self::UNIT_NAMES[11].1,
             ButtonId::WheelTiltRight => Self::UNIT_NAMES[12].1,
+            ButtonId::PresenterTouch => Self::UNIT_NAMES[13].1,
+            ButtonId::PresenterPress => Self::UNIT_NAMES[14].1,
+            ButtonId::PresenterClick => Self::UNIT_NAMES[15].1,
             ButtonId::Control(_) => return None,
         })
     }
@@ -238,6 +278,9 @@ impl ButtonId {
             ButtonId::ThumbwheelScrollDown => "Thumb Wheel Down",
             ButtonId::GestureButton => "Gesture Button",
             ButtonId::HapticPanel => "Haptic Panel",
+            ButtonId::PresenterTouch => "Highlight Button (Touch)",
+            ButtonId::PresenterPress => "Highlight Button (Firm Press)",
+            ButtonId::PresenterClick => "Highlight Button (Click)",
             ButtonId::Control(cid) => return cid.label(),
         })
     }
@@ -259,6 +302,9 @@ impl ButtonId {
             ButtonId::ThumbwheelScrollDown => "pointer.thumb_wheel_down",
             ButtonId::GestureButton => "actions.gesture_button",
             ButtonId::HapticPanel => "actions.haptic_panel",
+            ButtonId::PresenterTouch => "actions.presenter_touch_button",
+            ButtonId::PresenterPress => "actions.presenter_press_button",
+            ButtonId::PresenterClick => "actions.presenter_click_button",
             ButtonId::Control(cid) => cid.translation_key(),
         }
     }
