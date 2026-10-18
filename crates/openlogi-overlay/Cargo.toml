@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "OpenLogi Actions Ring overlay — the cursor-centred radial menu, a pure IPC client of the agent."
+description = "OpenLogi overlay — the cursor-centred Actions Ring, the presenter highlight and the backlight indicator, a pure IPC client of the agent."
 # Distributed as a login-item helper inside the bundled .app; never published.
 publish = false
 
@@ -37,9 +37,11 @@ embed-resource = "3.0.9"
 # (its bounds are display-relative). C FFI, so core-graphics.
 core-graphics = { workspace = true }
 objc2 = { workspace = true }
-objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSWindow", "NSEvent", "block2"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSEvent", "block2"] }
 # NSEvent global-monitor handlers are ObjC blocks (click-away dismissal).
 block2 = { workspace = true }
+# Maps a GPUI window to its NSWindow for the highlight window policy.
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"

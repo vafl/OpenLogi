@@ -2,6 +2,7 @@
 paths:
   - "crates/openlogi-desktop/src/platform/**"
   - "crates/openlogi-overlay/src/platform.rs"
+  - "crates/openlogi-overlay/src/platform/macos.rs"
   - "crates/openlogi-permissions/**"
   - "crates/openlogi-camera/**"
   - "crates/openlogi-agent/src/activity_macos.rs"
@@ -48,7 +49,7 @@ files; **keep this table in sync when you add or move one**:
 | `openlogi-inject/src/inject/macos/{app_services,dock,symbolic_hotkey}.rs` | the `dlopen`'d private SPIs: `CoreDockSendNotification` and the CGS symbolic-hotkey trio (`app_services.rs` also resolves CoreGraphics and SkyLight symbols) |
 | `openlogi-inject/src/inject/macos/keyboard_layout.rs` | the active keyboard layout's `uchr` data (Text Input Source Services, read on the main thread) and `UCKeyTranslate` over it |
 | `openlogi-inject/src/inject/macos/main_thread.rs` | the bounded hand-off of main-thread work from the action worker to the main queue (`dispatch2`) |
-| `openlogi-overlay/src/platform.rs` | the Actions Ring helper's window policy: accessory activation, non-activating panel, the `NSEvent` global click-away monitor (`block2`), and `CGGetActiveDisplayList` / `CGDisplayBounds` |
+| `openlogi-overlay/src/platform/macos.rs` | the Actions Ring helper's window policy: accessory activation, non-activating panel, the `NSEvent` global click-away monitor (`block2`), and `CGGetActiveDisplayList` / `CGDisplayBounds`, plus the presenter highlight window's policy (click-through, shadowless, above full-screen apps) |
 | `openlogi-permissions/src/macos.rs` | non-prompting permission reads + System-Settings deep links; `+[CBManager authorization]` via an `AnyClass` lookup |
 
 Every rule below binds all of them, whichever crate they live in.
@@ -297,7 +298,7 @@ under a `SAFETY` comment. Where it currently lives on macOS:
 - `permissions/macos.rs` — the CoreBluetooth force-link and the `CBManager`
   class-method send. `IOHIDCheckAccess` needs none: `objc2-io-kit` exposes it as
   a safe fn, in `openlogi-permissions` and `openlogi-hid` alike.
-- `overlay/platform.rs` — `NSEvent::removeMonitor` and the
+- `overlay/platform/macos.rs` — `NSEvent::removeMonitor` and the
   `CGGetActiveDisplayList` / `CGDisplayBounds` pair.
 - `desktop/platform/os.rs` — reading AppKit's `NSAppearanceName` statics to set
   `NSApp.appearance`.

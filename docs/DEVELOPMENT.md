@@ -197,7 +197,7 @@ crates/
   openlogi-ui/      presentation shared by the two GPUI processes: ring geometry/icons,
                     the GPUI asset source, locale negotiation — gpui, no gpui-component
   openlogi-desktop/     the `openlogi-desktop` binary — GPUI + gpui-component IPC client
-  openlogi-overlay/ the `openlogi-overlay` binary — the cursor-centred Actions Ring
+  openlogi-overlay/ the `openlogi-overlay` binary — the cursor-centred Actions Ring and presenter highlight
 ```
 
 ## Agent guidance

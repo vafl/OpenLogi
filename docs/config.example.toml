@@ -80,6 +80,26 @@ mode = "ratchet"
 auto_disengage = 16
 tunable_torque = 50
 
+# A Logitech Spotlight 2 presenter (its own device key); defaults shown. Force
+# thresholds are raw units (93-933, lower = lighter; touch <= press). macOS
+# only for now: elsewhere none of this is written to the device.
+[devices."receiver:aabbccdd:slot:3".presenter]
+touch_force = 93
+press_force = 300
+haptics = true              # false turns the device's haptics off
+pointer = "hide"            # hidden until the mouse moves; "follow" moves it with the dot
+laser_size = 12             # points, 4-40
+laser_color = "ff2a2a"
+spotlight_size = 170        # points, 60-400
+spotlight_dim = 50          # percent, 0-100
+sensitivity = 100           # percent, 25-200
+precision = true
+steady_release = true
+
+# Here "None" turns the presenter's click off (the default "LeftClick" keeps it).
+[devices."receiver:aabbccdd:slot:3".bindings]
+PresenterClick = "None"
+
 # Put host-switch links on the keyboard's physical entry.
 [devices."receiver:aabbccdd:slot:2"]
 host_switch_targets = ["receiver:aabbccdd:slot:1"]

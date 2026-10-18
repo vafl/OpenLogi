@@ -105,6 +105,11 @@ Common device fields are:
   `Thumbwheel` is the thumb wheel's capacitive tap — it has no GUI control and
   stays inert unless bound here, because the wheel reports taps from incidental
   thumb contact as well as from deliberate ones.
+  The Spotlight 2's button binds as `PresenterTouch` (default
+  `{ Highlight = "LaserDot" }`), `PresenterPress` (default
+  `{ Highlight = "Spotlight" }`) and `PresenterClick` (default `"LeftClick"`,
+  the firmware's native click). Here `None` on `PresenterClick` turns the
+  click off, since its native function is itself a click.
   Keyboard keys are named by their HID++ `0x1b04` control: a catalog name such
   as `KeyScreenCapture`, `KeyCalculator` or `KeyLock`, or `control:0x<cid>` for
   any control `openlogi diag controls` reports as divertable. A bound key is
@@ -124,6 +129,17 @@ Common device fields are:
   `action_ring.per_app` takes the same selectors as `per_app_bindings`,
   including the Windows `exe:<filename>` fallback
 - `lighting`, `smartshift`, and camera controls / profiles
+- `presenter` for the Logitech Spotlight 2 (HID++ `0x19c0`): the highlight
+  button's force thresholds, the device's haptics (`haptics = false` turns
+  them off), the laser/spotlight look and the motion, written to the device
+  when it connects and when this file changes; every key and its range is in
+  [`config.example.toml`](config.example.toml). An out-of-range value or
+  malformed colour is rejected when the file loads, not clamped. Unset
+  thresholds are written as the OpenLogi defaults, 93 / 300 (lighter than
+  Logitech's 140 / 350), on every connect. Neither the thresholds nor the
+  level-reporting mode are restored when the agent exits; that is deliberate.
+  The highlight is macOS-only for now: elsewhere the button keeps its
+  native behaviour and nothing is written to the device
 - standalone `light`: the agent writes it when the light connects, when a save
   changes it, and, with `auto_camera` on, when camera use starts or stops.
   Saving another setting leaves a change made with the light's own buttons in

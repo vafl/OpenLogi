@@ -1,8 +1,11 @@
-//! Lightweight GPUI host for the cursor-centred Actions Ring.
+//! Lightweight GPUI host for the cursor-centred Actions Ring, the presenter
+//! highlight and the keyboard-backlight indicator.
 //!
 //! This process is a pure IPC client. The agent owns HID++, session validation,
-//! haptic output, and action execution; the overlay only renders the
-//! agent-snapshotted actions and reports hover/activate/cancel interactions.
+//! haptic output, and action execution; the overlay only renders what the agent
+//! publishes (the snapshotted ring actions, the highlight session, the
+//! backlight level) and reports hover/activate/cancel interactions and where a
+//! highlight's dot ended up.
 
 #![cfg_attr(
     all(target_os = "windows", not(debug_assertions)),
@@ -15,6 +18,7 @@
 rust_i18n::i18n!("../openlogi-ui/locales", fallback = "en");
 
 mod backlight;
+mod highlight;
 mod ipc;
 mod platform;
 mod ring;
@@ -38,7 +42,7 @@ use crate::session::{
 
 #[expect(
     clippy::too_many_lines,
-    reason = "the overlay bootstraps two independent IPC observation tasks"
+    reason = "the overlay bootstraps three independent IPC observation tasks: ring, backlight, highlight"
 )]
 fn main() -> Result<()> {
     openlogi_core::logging::init_stderr();
@@ -49,6 +53,7 @@ fn main() -> Result<()> {
     let ipc::Handle {
         mut invocations,
         mut backlights,
+        highlights,
         commands,
     } = ipc::spawn();
 
@@ -66,28 +71,19 @@ fn main() -> Result<()> {
         platform::configure_application();
         let live_session = Arc::new(ClickAwaySession::new());
         spawn_click_away_dismissal(cx, Arc::clone(&live_session));
+        highlight::spawn(cx, highlights, commands.clone());
         cx.spawn(async move |cx| {
             while let Some(observed) = invocations.recv().await {
                 // No ring is what a dismissal looks like: close whatever is
                 // showing and open nothing. The agent has already forgotten the
                 // session, so there is nothing to acknowledge either.
                 let Some(invocation) = observed else {
-                    cx.update(|cx| {
-                        for handle in cx.windows() {
-                            if handle.downcast::<RingView>().is_some() {
-                                let _ = handle.update(cx, |_, window, _| window.remove_window());
-                            }
-                        }
-                    });
+                    cx.update(close_all_rings);
                     continue;
                 };
                 openlogi_core::locale::activate(invocation.language.as_deref());
                 cx.update(|cx| {
-                    for handle in cx.windows() {
-                        if handle.downcast::<RingView>().is_some() {
-                            let _ = handle.update(cx, |_, window, _| window.remove_window());
-                        }
-                    }
+                    close_all_rings(cx);
                     #[cfg_attr(
                         windows,
                         expect(
@@ -195,6 +191,15 @@ fn main() -> Result<()> {
         .detach();
     });
     Ok(())
+}
+
+/// Close every ring window, leaving the highlight window alone.
+fn close_all_rings(cx: &mut gpui::App) {
+    for handle in cx.windows() {
+        if let Some(ring) = handle.downcast::<RingView>() {
+            let _ = ring.update(cx, |_, window, _| window.remove_window());
+        }
+    }
 }
 
 #[cfg(test)]
